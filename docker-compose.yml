@@ -1,0 +1,82 @@
+services:
+  # =============================================================================
+  # Microservicio Payment
+  # =============================================================================
+  payment-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: beathub-delivery-payment
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      SERVER_PORT: ${SERVER_PORT:-8083}
+      SERVER_MAX_HTTP_REQUEST_HEADER_SIZE: ${SERVER_MAX_HTTP_REQUEST_HEADER_SIZE:-65536}
+      SERVER_SERVLET_CONTEXT_PATH: ${SERVER_SERVLET_CONTEXT_PATH:-/api/v1/payment}
+      SPRING_DATASOURCE_URL: ${SPRING_DATASOURCE_URL:-jdbc:postgresql://host.docker.internal:5432/beathub_payment_db?currentSchema=payment,public}
+      SPRING_DATASOURCE_USERNAME: ${SPRING_DATASOURCE_USERNAME:-postgres}
+      SPRING_DATASOURCE_PASSWORD: ${SPRING_DATASOURCE_PASSWORD:-postgrespassword}
+      SPRING_JPA_HIBERNATE_DDL_AUTO: ${SPRING_JPA_HIBERNATE_DDL_AUTO:-update}
+      SPRING_FLYWAY_ENABLED: ${SPRING_FLYWAY_ENABLED:-true}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-*}
+      JWT_SECRET: ${JWT_SECRET:-404E635266556A586E3272357538782F413F4428472B4B6250645367566B5970}
+      JWT_EXPIRATION_MS: ${JWT_EXPIRATION_MS:-86400000}
+      CREDIBANCO_BASE_URL: ${CREDIBANCO_BASE_URL:-https://ecouat.credibanco.com/payment/rest}
+      CREDIBANCO_USERNAME: ${CREDIBANCO_USERNAME:-TEST_USER}
+      CREDIBANCO_PASSWORD: ${CREDIBANCO_PASSWORD:-TEST_PASSWORD}
+      CREDIBANCO_SECRET_KEY_HMAC: ${CREDIBANCO_SECRET_KEY_HMAC:-TEST_CALLBACK_KEY}
+      CREDIBANCO_CURRENCY_CODE: ${CREDIBANCO_CURRENCY_CODE:-170}
+      CREDIBANCO_SESSION_TIMEOUT_SECS: ${CREDIBANCO_SESSION_TIMEOUT_SECS:-1200}
+      CREDIBANCO_DEFAULT_RETURN_URL: ${CREDIBANCO_DEFAULT_RETURN_URL:-https://beathub.app/payment/success}
+      CREDIBANCO_DEFAULT_FAIL_URL: ${CREDIBANCO_DEFAULT_FAIL_URL:-https://beathub.app/payment/fail}
+      CREDIBANCO_MCC_TRAVEL_AGENCY: ${CREDIBANCO_MCC_TRAVEL_AGENCY:-false}
+      CREDIBANCO_PROXY_BASE_URL: ${CREDIBANCO_PROXY_BASE_URL:-https://ecouat.credibanco.com/proxy/rest}
+      SERVICES_ORDERING_URL: ${SERVICES_ORDERING_URL:-http://host.docker.internal:8082/api/v1/ordering}
+      SERVICES_AUTH_URL: ${SERVICES_AUTH_URL:-http://host.docker.internal:8080/api/v1/auth}
+    ports:
+      - "8083:8083"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8083/api/v1/payment/actuator/health | grep UP || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 25s
+    networks:
+      - beathub-network
+
+  # =============================================================================
+  # PostgreSQL Opcional en Docker (Solo se levanta si ejecutas con --profile with-db)
+  # =============================================================================
+  postgres-payment:
+    image: postgres:16-alpine
+    container_name: beathub-postgres-payment
+    restart: unless-stopped
+    profiles:
+      - with-db
+    environment:
+      POSTGRES_DB: beathub_payment_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgrespassword
+    ports:
+      - "5436:5432"
+    volumes:
+      - postgres_payment_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d beathub_payment_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - beathub-network
+
+volumes:
+  postgres_payment_data:
+    driver: local
+
+networks:
+  beathub-network:
+    driver: bridge

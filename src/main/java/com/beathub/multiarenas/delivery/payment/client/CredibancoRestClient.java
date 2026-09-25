@@ -263,6 +263,6 @@ public class CredibancoRestClient {
 
     private String maskSensitive(String input) {
         if (input == null) return "";
-        return input.replaceAll("password=[^&,\]]+", "password=******");
+        return input.replaceAll("password=[^&,\\]]+", "password=******");
     }
 }

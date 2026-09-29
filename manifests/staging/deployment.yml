@@ -25,7 +25,7 @@ spec:
             - name: SERVER_SERVLET_CONTEXT_PATH
               value: "/api/v1/payment"
             - name: SPRING_DATASOURCE_URL
-              value: "jdbc:postgresql://57.169.188.42:5432/multiarenas_dev?currentSchema=payment,public"
+              value: "jdbc:postgresql://57.169.188.42:5432/multiarenas_stg?currentSchema=payment,public"
             - name: SPRING_DATASOURCE_USERNAME
               value: "multi_user_stg"
             - name: SPRING_DATASOURCE_PASSWORD

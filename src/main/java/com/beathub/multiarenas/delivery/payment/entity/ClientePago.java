@@ -23,6 +23,9 @@ public class ClientePago {
     @Column(name = "arena_usuario_id", nullable = false)
     private Long arenaUsuarioId;
 
+    @Column(name = "arena_id", length = 50)
+    private String arenaId;
+
     @Column(name = "tarjeta_enmascarada", length = 30)
     private String tarjetaEnmascarada;
 

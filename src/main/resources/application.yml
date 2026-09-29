@@ -54,9 +54,8 @@ credibanco:
   password: ${CREDIBANCO_PASSWORD:TEST_PASSWORD}
   secret-key-hmac: ${CREDIBANCO_SECRET_KEY_HMAC:TEST_CALLBACK_KEY}
   currency-code: ${CREDIBANCO_CURRENCY_CODE:170}
-  session-timeout-secs: ${CREDIBANCO_SESSION_TIMEOUT_SECS:1200}
-  default-return-url: ${CREDIBANCO_DEFAULT_RETURN_URL:https://beathub.app/payment/success}
-  default-fail-url: ${CREDIBANCO_DEFAULT_FAIL_URL:https://beathub.app/payment/fail}
+  default-return-url: ${CREDIBANCO_DEFAULT_RETURN_URL:}
+  default-fail-url: ${CREDIBANCO_DEFAULT_FAIL_URL:}
   mcc-travel-agency: ${CREDIBANCO_MCC_TRAVEL_AGENCY:false}
   proxy-base-url: ${CREDIBANCO_PROXY_BASE_URL:https://ecouat.credibanco.com/proxy/rest}
 

@@ -14,8 +14,8 @@ public class CredibancoProperties {
     private String secretKeyHmac = "TEST_CALLBACK_KEY";
     private String currencyCode = "170";
     private Integer sessionTimeoutSecs = 1200;
-    private String defaultReturnUrl = "https://beathub.app/payment/success";
-    private String defaultFailUrl = "https://beathub.app/payment/fail";
+    private String defaultReturnUrl;
+    private String defaultFailUrl;
     private Boolean mccTravelAgency = false;
     private String proxyBaseUrl = "https://ecouat.credibanco.com/proxy/rest";
 }

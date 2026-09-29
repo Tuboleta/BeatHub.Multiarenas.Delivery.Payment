@@ -25,11 +25,20 @@ public class GrupoPagoUsuario {
     @Column(name = "usuario_id", nullable = false)
     private Long usuarioId;
 
-    @Column(nullable = false, precision = 12, scale = 2)
-    private BigDecimal monto;
+    @Column(name = "monto_asignado", precision = 12, scale = 2)
+    private BigDecimal montoAsignado; // Opcional / Nullable para aportes libres
+
+    @Column(name = "monto_pagado", nullable = false, precision = 12, scale = 2)
+    private BigDecimal montoPagado;
+
+    @Column(precision = 5, scale = 2)
+    private BigDecimal porcentaje;
+
+    @Column(name = "es_lider", nullable = false)
+    private Boolean esLider;
 
     @Column(name = "estado_id", nullable = false)
-    private Integer estadoId;
+    private Integer estadoId; // 1: Pendiente/Activo, 2: Pagado, 3: Retirado
 
     @Column(name = "creacion_fecha", nullable = false, updatable = false)
     private LocalDateTime creacionFecha;
@@ -50,6 +59,12 @@ public class GrupoPagoUsuario {
         }
         if (estadoId == null) {
             estadoId = 1;
+        }
+        if (esLider == null) {
+            esLider = false;
+        }
+        if (montoPagado == null) {
+            montoPagado = BigDecimal.ZERO;
         }
     }
 

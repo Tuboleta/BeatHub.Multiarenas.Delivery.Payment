@@ -10,4 +10,9 @@ public class CredibancoApiException extends RuntimeException {
         super(message);
         this.errorCode = errorCode;
     }
+
+    public CredibancoApiException(String errorCode, String message, Throwable cause) {
+        super(message, cause);
+        this.errorCode = errorCode;
+    }
 }

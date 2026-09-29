@@ -20,6 +20,9 @@ public class TipoGrupoPago {
     @Column(nullable = false, length = 100, unique = true)
     private String nombre;
 
+    @Column(length = 255)
+    private String descripcion;
+
     @Column(name = "vigencia_dias")
     private Integer vigenciaDias;
 

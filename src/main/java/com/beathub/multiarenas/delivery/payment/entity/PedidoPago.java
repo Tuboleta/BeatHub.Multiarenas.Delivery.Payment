@@ -48,6 +48,9 @@ public class PedidoPago {
     @JoinColumn(name = "grupo_pago_usuario_id")
     private GrupoPagoUsuario grupoPagoUsuario;
 
+    @Column(name = "pasarela_id")
+    private Integer pasarelaId;
+
     @Column(nullable = false, precision = 12, scale = 2)
     private BigDecimal monto;
 

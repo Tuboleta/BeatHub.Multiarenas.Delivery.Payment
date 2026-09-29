@@ -5,6 +5,7 @@ import com.beathub.multiarenas.delivery.payment.dto.request.RefundPaymentRequest
 import com.beathub.multiarenas.delivery.payment.dto.request.VerifyCardRequest;
 import com.beathub.multiarenas.delivery.payment.dto.response.*;
 import com.beathub.multiarenas.delivery.payment.service.PaymentService;
+import com.beathub.multiarenas.delivery.payment.security.SecurityUtils;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.servlet.http.HttpServletRequest;
@@ -27,9 +28,8 @@ public class PaymentController {
             @Valid @RequestBody InitPaymentRequest request,
             HttpServletRequest httpRequest
     ) {
-        String arenaId = (String) httpRequest.getAttribute("X-Arena-Id");
-        Long usuarioId = (Long) httpRequest.getAttribute("X-User-Id");
-        if (usuarioId == null) usuarioId = 1L;
+        String arenaId = resolveArenaId(httpRequest);
+        Long usuarioId = resolveUsuarioId(httpRequest);
 
         PaymentInitResponse response = paymentService.initiatePayment(request, arenaId, usuarioId);
         return ResponseEntity.ok(ApiResponse.ok(response, "Orden de pago generada exitosamente"));
@@ -41,8 +41,8 @@ public class PaymentController {
             @PathVariable Long pedidoPagoId,
             HttpServletRequest httpRequest
     ) {
-        String arenaId = (String) httpRequest.getAttribute("X-Arena-Id");
-        Long usuarioId = (Long) httpRequest.getAttribute("X-User-Id");
+        String arenaId = resolveArenaId(httpRequest);
+        Long usuarioId = resolveUsuarioId(httpRequest);
 
         PaymentStatusResponse response = paymentService.queryPaymentStatus(pedidoPagoId, arenaId, usuarioId);
         return ResponseEntity.ok(ApiResponse.ok(response));
@@ -54,8 +54,8 @@ public class PaymentController {
             @PathVariable String referenciaPago,
             HttpServletRequest httpRequest
     ) {
-        String arenaId = (String) httpRequest.getAttribute("X-Arena-Id");
-        Long usuarioId = (Long) httpRequest.getAttribute("X-User-Id");
+        String arenaId = resolveArenaId(httpRequest);
+        Long usuarioId = resolveUsuarioId(httpRequest);
 
         PaymentStatusResponse response = paymentService.queryPaymentStatusByReference(referenciaPago, arenaId, usuarioId);
         return ResponseEntity.ok(ApiResponse.ok(response));
@@ -67,8 +67,8 @@ public class PaymentController {
             @Valid @RequestBody RefundPaymentRequest request,
             HttpServletRequest httpRequest
     ) {
-        String arenaId = (String) httpRequest.getAttribute("X-Arena-Id");
-        Long usuarioId = (Long) httpRequest.getAttribute("X-User-Id");
+        String arenaId = resolveArenaId(httpRequest);
+        Long usuarioId = resolveUsuarioId(httpRequest);
 
         RefundResponse response = paymentService.refundPayment(request, arenaId, usuarioId);
         return ResponseEntity.ok(ApiResponse.ok(response));
@@ -80,10 +80,23 @@ public class PaymentController {
             @Valid @RequestBody VerifyCardRequest request,
             HttpServletRequest httpRequest
     ) {
-        String arenaId = (String) httpRequest.getAttribute("X-Arena-Id");
-        Long usuarioId = (Long) httpRequest.getAttribute("X-User-Id");
+        String arenaId = resolveArenaId(httpRequest);
+        Long usuarioId = resolveUsuarioId(httpRequest);
 
         VerifyCardResponse response = paymentService.verifyCard(request, arenaId, usuarioId);
         return ResponseEntity.ok(ApiResponse.ok(response));
+    }
+
+    private String resolveArenaId(HttpServletRequest request) {
+        Object attr = request.getAttribute("X-Arena-Id");
+        if (attr != null) return attr.toString();
+        return SecurityUtils.getCurrentArenaId().map(String::valueOf).orElse(request.getHeader("X-Arena-Id"));
+    }
+
+    private Long resolveUsuarioId(HttpServletRequest request) {
+        Object attr = request.getAttribute("X-User-Id");
+        if (attr instanceof Long id) return id;
+        if (attr instanceof Number num) return num.longValue();
+        return SecurityUtils.getCurrentUsuarioId().orElse(1L);
     }
 }

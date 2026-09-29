@@ -21,15 +21,36 @@ public class GrupoPago {
     @Column(name = "codigo_unico", nullable = false, length = 50, unique = true)
     private String codigoUnico;
 
+    @Column(name = "nombre", nullable = false, length = 100)
+    private String nombre;
+
+    @Column(name = "arena_id", length = 50)
+    private String arenaId;
+
+    @Column(name = "pedido_id")
+    private Long pedidoId;
+
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "tipo_grupo_pago_id")
     private TipoGrupoPago tipoGrupoPago;
 
+    @Column(name = "es_permanente", nullable = false)
+    private Boolean esPermanente;
+
+    @Column(name = "fecha_expiracion")
+    private LocalDateTime fechaExpiracion;
+
     @Column(name = "valor_total", nullable = false, precision = 12, scale = 2)
     private BigDecimal valorTotal;
 
+    @Column(name = "total_pagado", nullable = false, precision = 12, scale = 2)
+    private BigDecimal totalPagado;
+
+    @Column(name = "saldo_pendiente", nullable = false, precision = 12, scale = 2)
+    private BigDecimal saldoPendiente;
+
     @Column(name = "estado_id", nullable = false)
-    private Integer estadoId;
+    private Integer estadoId; // 1: Creado/Activo, 2: Completado (100% Pagado), 3: Expirado, 4: Cancelado
 
     @Column(name = "creacion_fecha", nullable = false, updatable = false)
     private LocalDateTime creacionFecha;
@@ -50,6 +71,18 @@ public class GrupoPago {
         }
         if (estadoId == null) {
             estadoId = 1;
+        }
+        if (esPermanente == null) {
+            esPermanente = false;
+        }
+        if (valorTotal == null) {
+            valorTotal = BigDecimal.ZERO;
+        }
+        if (totalPagado == null) {
+            totalPagado = BigDecimal.ZERO;
+        }
+        if (saldoPendiente == null) {
+            saldoPendiente = valorTotal.subtract(totalPagado).max(BigDecimal.ZERO);
         }
     }
 

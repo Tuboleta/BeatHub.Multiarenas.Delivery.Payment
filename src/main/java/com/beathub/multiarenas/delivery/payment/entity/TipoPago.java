@@ -20,8 +20,8 @@ public class TipoPago {
     @Column(nullable = false, length = 100, unique = true)
     private String nombre;
 
-    @Column(name = "pagos_credenciales", columnDefinition = "TEXT")
-    private String pagosCredenciales;
+    @Column(length = 255)
+    private String descripcion;
 
     @Column(name = "estado_id", nullable = false)
     private Integer estadoId;

@@ -2,6 +2,7 @@ package com.beathub.multiarenas.delivery.payment.client;
 
 import com.beathub.multiarenas.delivery.payment.client.dto.*;
 import com.beathub.multiarenas.delivery.payment.config.CredibancoProperties;
+import com.beathub.multiarenas.delivery.payment.exception.CredibancoApiException;
 import com.beathub.multiarenas.delivery.payment.service.IntegrationAuditService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
@@ -10,6 +11,7 @@ import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
 import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.util.MultiValueMap;
+import org.springframework.web.client.HttpStatusCodeException;
 import org.springframework.web.client.RestClient;
 
 import java.math.BigDecimal;
@@ -23,7 +25,7 @@ public class CredibancoRestClient {
     private final RestClient.Builder restClientBuilder;
     private final CredibancoProperties properties;
     private final IntegrationAuditService auditService;
-    private final ObjectMapper objectMapper = new ObjectMapper();
+    private final ObjectMapper objectMapper;
 
     /**
      * 9.2.1 Solicitud de registro del pedido (register.do)
@@ -76,21 +78,32 @@ public class CredibancoRestClient {
         String responseStr = "";
 
         try {
-            response = restClientBuilder.build()
+            responseStr = restClientBuilder.build()
                     .post()
                     .uri(targetUrl)
                     .contentType(MediaType.APPLICATION_FORM_URLENCODED)
+                    .accept(MediaType.APPLICATION_JSON, MediaType.TEXT_PLAIN)
                     .body(params)
                     .retrieve()
-                    .body(CredibancoRegisterResponse.class);
+                    .body(String.class);
 
-            responseStr = objectMapper.writeValueAsString(response);
+            log.info("Credibanco registerOrder raw response: {}", responseStr);
+            if (responseStr != null && !responseStr.isBlank()) {
+                response = objectMapper.readValue(responseStr, CredibancoRegisterResponse.class);
+            }
             return response;
+        } catch (HttpStatusCodeException ex) {
+            httpStatus = ex.getStatusCode().value();
+            responseStr = ex.getResponseBodyAsString();
+            log.error("Error HTTP ({}) al registrar pedido en Credibanco: {}", httpStatus, responseStr);
+            throw new CredibancoApiException(String.valueOf(httpStatus), "Error de comunicación con Credibanco: " + responseStr, ex);
         } catch (Exception ex) {
             httpStatus = 500;
-            responseStr = "Exception: " + ex.getMessage();
-            log.error("Error al registrar pedido en Credibanco: {}", ex.getMessage());
-            throw new RuntimeException("Credibanco registerOrder failed: " + ex.getMessage(), ex);
+            if (responseStr == null || responseStr.isBlank()) {
+                responseStr = "Exception: " + ex.getMessage();
+            }
+            log.error("Error al registrar pedido en Credibanco. Respuesta: '{}'. Error: {}", responseStr, ex.getMessage());
+            throw new CredibancoApiException("GATEWAY_ERROR", "Error al procesar registro en pasarela Credibanco: " + ex.getMessage(), ex);
         } finally {
             auditService.logExternalCall(
                     arenaId,
@@ -129,21 +142,32 @@ public class CredibancoRestClient {
         String responseStr = "";
 
         try {
-            response = restClientBuilder.build()
+            responseStr = restClientBuilder.build()
                     .post()
                     .uri(targetUrl)
                     .contentType(MediaType.APPLICATION_FORM_URLENCODED)
+                    .accept(MediaType.APPLICATION_JSON, MediaType.TEXT_PLAIN)
                     .body(params)
                     .retrieve()
-                    .body(CredibancoStatusResponse.class);
+                    .body(String.class);
 
-            responseStr = objectMapper.writeValueAsString(response);
+            log.info("Credibanco getOrderStatusExtended raw response: {}", responseStr);
+            if (responseStr != null && !responseStr.isBlank()) {
+                response = objectMapper.readValue(responseStr, CredibancoStatusResponse.class);
+            }
             return response;
+        } catch (HttpStatusCodeException ex) {
+            httpStatus = ex.getStatusCode().value();
+            responseStr = ex.getResponseBodyAsString();
+            log.error("Error HTTP ({}) al consultar estado en Credibanco: {}", httpStatus, responseStr);
+            throw new CredibancoApiException(String.valueOf(httpStatus), "Error de comunicación con Credibanco: " + responseStr, ex);
         } catch (Exception ex) {
             httpStatus = 500;
-            responseStr = "Exception: " + ex.getMessage();
-            log.error("Error al consultar estado en Credibanco: {}", ex.getMessage());
-            throw new RuntimeException("Credibanco getOrderStatusExtended failed: " + ex.getMessage(), ex);
+            if (responseStr == null || responseStr.isBlank()) {
+                responseStr = "Exception: " + ex.getMessage();
+            }
+            log.error("Error al consultar estado en Credibanco. Respuesta: '{}'. Error: {}", responseStr, ex.getMessage());
+            throw new CredibancoApiException("GATEWAY_ERROR", "Error al consultar estado en pasarela Credibanco: " + ex.getMessage(), ex);
         } finally {
             auditService.logExternalCall(
                     arenaId,
@@ -181,21 +205,32 @@ public class CredibancoRestClient {
         String responseStr = "";
 
         try {
-            response = restClientBuilder.build()
+            responseStr = restClientBuilder.build()
                     .post()
                     .uri(targetUrl)
                     .contentType(MediaType.APPLICATION_FORM_URLENCODED)
+                    .accept(MediaType.APPLICATION_JSON, MediaType.TEXT_PLAIN)
                     .body(params)
                     .retrieve()
-                    .body(CredibancoRefundResponse.class);
+                    .body(String.class);
 
-            responseStr = objectMapper.writeValueAsString(response);
+            log.info("Credibanco refundOrder raw response: {}", responseStr);
+            if (responseStr != null && !responseStr.isBlank()) {
+                response = objectMapper.readValue(responseStr, CredibancoRefundResponse.class);
+            }
             return response;
+        } catch (HttpStatusCodeException ex) {
+            httpStatus = ex.getStatusCode().value();
+            responseStr = ex.getResponseBodyAsString();
+            log.error("Error HTTP ({}) al anular pedido en Credibanco: {}", httpStatus, responseStr);
+            throw new CredibancoApiException(String.valueOf(httpStatus), "Error de comunicación con Credibanco: " + responseStr, ex);
         } catch (Exception ex) {
             httpStatus = 500;
-            responseStr = "Exception: " + ex.getMessage();
-            log.error("Error al anular pedido en Credibanco: {}", ex.getMessage());
-            throw new RuntimeException("Credibanco refundOrder failed: " + ex.getMessage(), ex);
+            if (responseStr == null || responseStr.isBlank()) {
+                responseStr = "Exception: " + ex.getMessage();
+            }
+            log.error("Error al anular pedido en Credibanco. Respuesta: '{}'. Error: {}", responseStr, ex.getMessage());
+            throw new CredibancoApiException("GATEWAY_ERROR", "Error al anular pedido en pasarela Credibanco: " + ex.getMessage(), ex);
         } finally {
             auditService.logExternalCall(
                     arenaId,
@@ -231,21 +266,32 @@ public class CredibancoRestClient {
         String responseStr = "";
 
         try {
-            response = restClientBuilder.build()
+            responseStr = restClientBuilder.build()
                     .post()
                     .uri(targetUrl)
                     .contentType(MediaType.APPLICATION_FORM_URLENCODED)
+                    .accept(MediaType.APPLICATION_JSON, MediaType.TEXT_PLAIN)
                     .body(params)
                     .retrieve()
-                    .body(CredibancoVerifyCardResponse.class);
+                    .body(String.class);
 
-            responseStr = objectMapper.writeValueAsString(response);
+            log.info("Credibanco verifyCard raw response: {}", responseStr);
+            if (responseStr != null && !responseStr.isBlank()) {
+                response = objectMapper.readValue(responseStr, CredibancoVerifyCardResponse.class);
+            }
             return response;
+        } catch (HttpStatusCodeException ex) {
+            httpStatus = ex.getStatusCode().value();
+            responseStr = ex.getResponseBodyAsString();
+            log.error("Error HTTP ({}) al verificar tarjeta en Credibanco: {}", httpStatus, responseStr);
+            throw new CredibancoApiException(String.valueOf(httpStatus), "Error de comunicación con Credibanco: " + responseStr, ex);
         } catch (Exception ex) {
             httpStatus = 500;
-            responseStr = "Exception: " + ex.getMessage();
-            log.error("Error al verificar tarjeta en Credibanco: {}", ex.getMessage());
-            throw new RuntimeException("Credibanco verifyCard failed: " + ex.getMessage(), ex);
+            if (responseStr == null || responseStr.isBlank()) {
+                responseStr = "Exception: " + ex.getMessage();
+            }
+            log.error("Error al verificar tarjeta en Credibanco. Respuesta: '{}'. Error: {}", responseStr, ex.getMessage());
+            throw new CredibancoApiException("GATEWAY_ERROR", "Error al verificar tarjeta en pasarela Credibanco: " + ex.getMessage(), ex);
         } finally {
             auditService.logExternalCall(
                     arenaId,

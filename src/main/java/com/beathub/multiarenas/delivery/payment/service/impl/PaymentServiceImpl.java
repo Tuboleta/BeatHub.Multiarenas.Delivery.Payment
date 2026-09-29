@@ -21,6 +21,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.UUID;
 
@@ -33,6 +34,7 @@ public class PaymentServiceImpl implements PaymentService {
     private final TipoPagoRepository tipoPagoRepository;
     private final MedioPagoRepository medioPagoRepository;
     private final GrupoPagoUsuarioRepository grupoPagoUsuarioRepository;
+    private final GrupoPagoRepository grupoPagoRepository;
     private final CredibancoRestClient credibancoClient;
     private final OrderingServiceClient orderingClient;
     private final CredibancoProperties credibancoProperties;
@@ -73,6 +75,7 @@ public class PaymentServiceImpl implements PaymentService {
                 .tipoPago(tipoPago)
                 .medioPago(medioPago)
                 .grupoPagoUsuario(grupoPagoUsuario)
+                .pasarelaId(2) // 2: Credibanco
                 .monto(request.getMonto())
                 .moneda("COP")
                 .referenciaPago(referenciaPago)
@@ -161,14 +164,13 @@ public class PaymentServiceImpl implements PaymentService {
                     pedidoPago.setErrorMessage(statusResp.getErrorMessage());
 
                     if (statusResp.isApproved()) {
-                        pedidoPago.setEstadoId(2); // 2: Aprobado / Deposited
-                        pedidoPago.setFechaPago(LocalDateTime.now());
-                        // Notificar a Ordering (estado 2: Pagado / En preparación)
-                        orderingClient.updateOrderStatus(pedidoPago.getPedidoId(), 2, "Pago confirmado en Credibanco (authCode: " + statusResp.getAuthCode() + ")", null);
+                        onPaymentApproved(pedidoPago, "Pago confirmado en Credibanco (authCode: " + statusResp.getAuthCode() + ")");
                     } else if (statusResp.getOrderStatus() != null && statusResp.getOrderStatus() == 6) {
                         pedidoPago.setEstadoId(3); // 3: Rechazado
+                        pedidoPagoRepository.save(pedidoPago);
+                    } else {
+                        pedidoPagoRepository.save(pedidoPago);
                     }
-                    pedidoPagoRepository.save(pedidoPago);
                 }
             } catch (Exception e) {
                 log.warn("No se pudo consultar estado extendido en Credibanco para {}: {}", pedidoPago.getReferenciaPago(), e.getMessage());
@@ -218,12 +220,7 @@ public class PaymentServiceImpl implements PaymentService {
 
         if ("deposited".equalsIgnoreCase(operation) || "approved".equalsIgnoreCase(operation)) {
             if (Integer.valueOf(1).equals(status)) {
-                pedidoPago.setEstadoId(2); // Aprobado
-                pedidoPago.setFechaPago(LocalDateTime.now());
-                pedidoPagoRepository.save(pedidoPago);
-
-                // Notificar a microservicio Ordering
-                orderingClient.updateOrderStatus(pedidoPago.getPedidoId(), 2, "Pago aprobado via webhook Credibanco (" + operation + ")", null);
+                onPaymentApproved(pedidoPago, "Pago aprobado via webhook Credibanco (" + operation + ")");
             } else {
                 pedidoPago.setEstadoId(3); // Rechazado
                 pedidoPagoRepository.save(pedidoPago);
@@ -236,6 +233,47 @@ public class PaymentServiceImpl implements PaymentService {
             pedidoPago.setEstadoId(5); // Anulado/Reembolsado
             pedidoPagoRepository.save(pedidoPago);
             orderingClient.updateOrderStatus(pedidoPago.getPedidoId(), 5, "Pago anulado/reembolsado via webhook Credibanco", null);
+        }
+    }
+
+    private void onPaymentApproved(PedidoPago pedidoPago, String detailMessage) {
+        pedidoPago.setEstadoId(2); // 2: Aprobado / Deposited
+        pedidoPago.setFechaPago(LocalDateTime.now());
+        pedidoPagoRepository.save(pedidoPago);
+
+        if (pedidoPago.getGrupoPagoUsuario() != null) {
+            GrupoPagoUsuario gpu = pedidoPago.getGrupoPagoUsuario();
+            BigDecimal pagadoPrevio = gpu.getMontoPagado() != null ? gpu.getMontoPagado() : BigDecimal.ZERO;
+            gpu.setMontoPagado(pagadoPrevio.add(pedidoPago.getMonto()));
+
+            if (gpu.getMontoAsignado() != null && gpu.getMontoPagado().compareTo(gpu.getMontoAsignado()) >= 0) {
+                gpu.setEstadoId(2); // 2: Pagado
+            }
+            grupoPagoUsuarioRepository.save(gpu);
+
+            GrupoPago gp = gpu.getGrupoPago();
+            if (gp != null) {
+                BigDecimal totalPagadoPrevio = gp.getTotalPagado() != null ? gp.getTotalPagado() : BigDecimal.ZERO;
+                BigDecimal nuevoTotalPagado = totalPagadoPrevio.add(pedidoPago.getMonto());
+                gp.setTotalPagado(nuevoTotalPagado);
+
+                BigDecimal valorTotal = gp.getValorTotal() != null ? gp.getValorTotal() : BigDecimal.ZERO;
+                BigDecimal nuevoSaldo = valorTotal.subtract(nuevoTotalPagado).max(BigDecimal.ZERO);
+                gp.setSaldoPendiente(nuevoSaldo);
+
+                if (nuevoSaldo.compareTo(BigDecimal.ZERO) <= 0) {
+                    gp.setEstadoId(2); // 2: Completado (100% Pagado)
+                    orderingClient.updateOrderStatus(pedidoPago.getPedidoId(), 2,
+                            "Vaca/Pago grupal 100% completado (" + detailMessage + ")", null);
+                } else {
+                    log.info("Aporte a la vaca registrado para pedido {}. Total recaudado: {}, Saldo pendiente: {}",
+                            pedidoPago.getPedidoId(), nuevoTotalPagado, nuevoSaldo);
+                }
+                grupoPagoRepository.save(gp);
+            }
+        } else {
+            // Notificar a Ordering (estado 2: Pagado / En preparación)
+            orderingClient.updateOrderStatus(pedidoPago.getPedidoId(), 2, detailMessage, null);
         }
     }
 

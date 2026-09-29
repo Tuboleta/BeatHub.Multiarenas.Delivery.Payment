@@ -55,7 +55,15 @@ public class UserPrincipal implements UserDetails {
         String username = claims.get("username", String.class);
         String email = claims.get("email", String.class);
         String ssoId = claims.get("ssoId", String.class);
-        Long personaId = claims.get("personaId", Long.class);
+        Long personaId = null;
+        Object rawPersonaId = claims.get("personaId");
+        if (rawPersonaId instanceof Number num) {
+            personaId = num.longValue();
+        } else if (rawPersonaId instanceof String str && !str.isBlank()) {
+            try {
+                personaId = Long.parseLong(str);
+            } catch (NumberFormatException ignored) {}
+        }
 
         Long currentArenaId = null;
         Object rawCurrentArena = claims.get("currentArenaId");

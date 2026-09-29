@@ -38,6 +38,10 @@ spec:
               value: "true"
             - name: CORS_ALLOWED_ORIGINS
               value: "*"
+            - name: JWT_SECRET
+              value: "404E635266556A586E3272357538782F413F4428472B4B6250645367566B5970"
+            - name: JWT_ISSUER
+              value: "beathub-auth-service"
           resources:
             requests:
               cpu: "100m"

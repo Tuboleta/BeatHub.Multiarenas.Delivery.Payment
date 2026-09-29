@@ -1,0 +1,47 @@
+apiVersion : apps/v1
+kind: Deployment
+metadata:
+  name: beathubmultiarenasdeliverypayment
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: beathubmultiarenasdeliverypayment
+  template:
+    metadata:
+      labels:
+        app: beathubmultiarenasdeliverypayment
+    spec:
+      imagePullSecrets:
+        - name: acr-pull-secret
+      containers:
+        - name: beathubmultiarenasdeliverypayment
+          image: beathubconnectposcontainer.azurecr.io/beathubmultiarenasdeliverypayment
+          ports:
+          - containerPort: 8083
+          env:
+            - name: SERVER_PORT
+              value: "8083"
+            - name: SERVER_SERVLET_CONTEXT_PATH
+              value: "/api/v1/payment"
+            - name: SPRING_DATASOURCE_URL
+              value: "jdbc:postgresql://57.169.188.42:5432/multiarenas_dev?currentSchema=payment,public"
+            - name: SPRING_DATASOURCE_USERNAME
+              value: "multi_user_stg"
+            - name: SPRING_DATASOURCE_PASSWORD
+              value: "JS.23AnDFAsd$3"
+            - name: SPRING_JPA_HIBERNATE_DDL_AUTO
+              value: "validate"
+            - name: SPRING_JPA_SHOW_SQL
+              value: "false"
+            - name: SPRING_FLYWAY_ENABLED
+              value: "true"
+            - name: CORS_ALLOWED_ORIGINS
+              value: "*"
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"          
+            limits:
+              cpu: "500m"
+              memory: "256Mi"

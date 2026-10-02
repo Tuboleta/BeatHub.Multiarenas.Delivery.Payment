@@ -46,7 +46,7 @@ public class GrupoPagoServiceImpl implements GrupoPagoService {
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     private jakarta.servlet.http.HttpServletRequest httpRequest;
 
-    @Value("${app.pwa.base-url:https://delivery-stg.beat-hub.com}")
+    @Value("${app.pwa.base-url:https://delivery-daviarena-stg.beat-hub.com}")
     private String pwaBaseUrl;
 
     @Override
@@ -749,7 +749,7 @@ public class GrupoPagoServiceImpl implements GrupoPagoService {
         if (pwaBaseUrl != null && !pwaBaseUrl.isBlank() && !pwaBaseUrl.contains("localhost")) {
             return pwaBaseUrl.replaceAll("/+$", "");
         }
-        return (pwaBaseUrl != null && !pwaBaseUrl.isBlank()) ? pwaBaseUrl : "https://delivery-stg.beat-hub.com";
+        return (pwaBaseUrl != null && !pwaBaseUrl.isBlank()) ? pwaBaseUrl : "https://delivery-daviarena-stg.beat-hub.com";
     }
 }
 

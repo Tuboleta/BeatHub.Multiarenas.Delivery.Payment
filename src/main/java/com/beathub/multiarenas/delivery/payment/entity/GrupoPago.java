@@ -37,6 +37,15 @@ public class GrupoPago {
     @Column(name = "es_permanente", nullable = false)
     private Boolean esPermanente;
 
+    @Column(name = "modalidad_division", length = 30)
+    private String modalidadDivision; // "POR_PARTES_IGUALES" o "LIBRE_PAGO"
+
+    @Column(name = "cantidad_personas")
+    private Integer cantidadPersonas;
+
+    @Column(name = "monto_preasignado", precision = 12, scale = 2)
+    private BigDecimal montoPreasignado;
+
     @Column(name = "fecha_expiracion")
     private LocalDateTime fechaExpiracion;
 

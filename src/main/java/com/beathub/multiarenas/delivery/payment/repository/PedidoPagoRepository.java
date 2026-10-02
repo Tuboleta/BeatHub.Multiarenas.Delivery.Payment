@@ -14,4 +14,5 @@ public interface PedidoPagoRepository extends JpaRepository<PedidoPago, Long> {
     Optional<PedidoPago> findByMdOrder(String mdOrder);
     List<PedidoPago> findByPedidoId(Long pedidoId);
     List<PedidoPago> findByUsuarioId(Long usuarioId);
+    List<PedidoPago> findByGrupoPagoUsuario_GrupoPago_Id(Long grupoPagoId);
 }

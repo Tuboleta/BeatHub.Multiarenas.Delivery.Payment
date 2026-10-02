@@ -98,3 +98,9 @@ services:
     url: ${SERVICES_ORDERING_URL:http://localhost:8082/api/v1/ordering}
   auth:
     url: ${SERVICES_AUTH_URL:http://localhost:8080/api/v1/auth}
+
+# Configuración Aplicación PWA
+app:
+  pwa:
+    base-url: ${PWA_BASE_URL:http://localhost:3000}
+

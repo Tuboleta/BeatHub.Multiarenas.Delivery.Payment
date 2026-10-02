@@ -60,6 +60,8 @@ spec:
               value: "http://beathubmultiarenasdeliveryordering.multiarenas.svc.cluster.local/api/v1/ordering"
             - name: SERVICES_AUTH_URL
               value: "http://beathubmultiarenasdeliveryauth.multiarenas.svc.cluster.local/api/v1/auth"
+            - name: PWA_BASE_URL
+              value: "https://delivery-stg.beat-hub.com"
           resources:
             requests:
               cpu: "250m"

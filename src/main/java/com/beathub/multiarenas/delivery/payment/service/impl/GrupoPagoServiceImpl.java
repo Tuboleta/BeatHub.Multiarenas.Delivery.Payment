@@ -43,7 +43,10 @@ public class GrupoPagoServiceImpl implements GrupoPagoService {
     private final PaymentService paymentService;
     private final QrCodeGeneratorService qrCodeGeneratorService;
 
-    @Value("${app.pwa.base-url:http://localhost:3000}")
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private jakarta.servlet.http.HttpServletRequest httpRequest;
+
+    @Value("${app.pwa.base-url:https://delivery-stg.beat-hub.com}")
     private String pwaBaseUrl;
 
     @Override
@@ -634,7 +637,7 @@ public class GrupoPagoServiceImpl implements GrupoPagoService {
             rangoMaximo = cuotaPre;
         }
 
-        String baseUrl = (pwaBaseUrl != null && !pwaBaseUrl.isBlank()) ? pwaBaseUrl : "http://localhost:3000";
+        String baseUrl = resolverBaseUrl();
         String qrCodeData = baseUrl + "/vaca/" + gp.getCodigoUnico();
         String qrCodeImage = qrCodeGeneratorService != null ? qrCodeGeneratorService.generateQrCodeBase64(qrCodeData, 300, 300) : null;
 
@@ -722,4 +725,31 @@ public class GrupoPagoServiceImpl implements GrupoPagoService {
             default -> "ESTADO_" + estadoId;
         };
     }
+
+    private String resolverBaseUrl() {
+        if (httpRequest != null) {
+            String origin = httpRequest.getHeader("Origin");
+            if (origin != null && !origin.isBlank() && !origin.contains("localhost")) {
+                return origin.replaceAll("/+$", "");
+            }
+            String xForwardedHost = httpRequest.getHeader("X-Forwarded-Host");
+            if (xForwardedHost != null && !xForwardedHost.isBlank()) {
+                String proto = httpRequest.getHeader("X-Forwarded-Proto");
+                String scheme = (proto != null && !proto.isBlank()) ? proto : "https";
+                return scheme + "://" + xForwardedHost.replaceAll("/+$", "");
+            }
+            String referer = httpRequest.getHeader("Referer");
+            if (referer != null && !referer.isBlank() && !referer.contains("localhost")) {
+                try {
+                    java.net.URI uri = new java.net.URI(referer);
+                    return uri.getScheme() + "://" + uri.getAuthority();
+                } catch (Exception ignored) {}
+            }
+        }
+        if (pwaBaseUrl != null && !pwaBaseUrl.isBlank() && !pwaBaseUrl.contains("localhost")) {
+            return pwaBaseUrl.replaceAll("/+$", "");
+        }
+        return (pwaBaseUrl != null && !pwaBaseUrl.isBlank()) ? pwaBaseUrl : "https://delivery-stg.beat-hub.com";
+    }
 }
+

@@ -72,7 +72,7 @@ public class CredibancoRestClient {
             params.add("sessionTimeoutSecs", String.valueOf(properties.getSessionTimeoutSecs()));
         }
 
-        String requestStr = maskSensitive(params.toString());
+        String requestStr = formatRequestLog("POST", targetUrl, toMaskedMap(params));
         CredibancoRegisterResponse response = null;
         Integer httpStatus = 200;
         String responseStr = "";
@@ -136,7 +136,7 @@ public class CredibancoRestClient {
             params.add("orderNumber", orderNumber);
         }
 
-        String requestStr = maskSensitive(params.toString());
+        String requestStr = formatRequestLog("POST", targetUrl, toMaskedMap(params));
         CredibancoStatusResponse response = null;
         Integer httpStatus = 200;
         String responseStr = "";
@@ -199,7 +199,7 @@ public class CredibancoRestClient {
             params.add("amount", String.valueOf(minUnitsAmount));
         }
 
-        String requestStr = maskSensitive(params.toString());
+        String requestStr = formatRequestLog("POST", targetUrl, toMaskedMap(params));
         CredibancoRefundResponse response = null;
         Integer httpStatus = 200;
         String responseStr = "";
@@ -260,7 +260,12 @@ public class CredibancoRestClient {
         params.add("cvc", cvc);
         params.add("expiry", expiry); // YYYYMM
 
-        String requestStr = "pan=***" + (pan != null && pan.length() > 4 ? pan.substring(pan.length() - 4) : "") + ", expiry=" + expiry;
+        java.util.Map<String, Object> cardParams = new java.util.LinkedHashMap<>();
+        cardParams.put("pan", "pan=***" + (pan != null && pan.length() > 4 ? pan.substring(pan.length() - 4) : ""));
+        cardParams.put("cvc", "******");
+        cardParams.put("expiry", expiry);
+        String requestStr = formatRequestLog("POST", targetUrl, cardParams);
+
         CredibancoVerifyCardResponse response = null;
         Integer httpStatus = 200;
         String responseStr = "";
@@ -305,6 +310,35 @@ public class CredibancoRestClient {
                     (response != null && response.isSuccessful()) ? "SUCCESS" : "FAILED"
             );
         }
+    }
+
+    private String formatRequestLog(String method, String endpoint, Object body) {
+        try {
+            java.util.Map<String, Object> logMap = new java.util.LinkedHashMap<>();
+            logMap.put("method", method);
+            logMap.put("endpoint", endpoint != null ? endpoint : "");
+            logMap.put("body", body);
+            return objectMapper.writeValueAsString(logMap);
+        } catch (Exception e) {
+            return method + " " + endpoint;
+        }
+    }
+
+    private java.util.Map<String, Object> toMaskedMap(MultiValueMap<String, String> params) {
+        java.util.Map<String, Object> map = new java.util.LinkedHashMap<>();
+        if (params != null) {
+            for (java.util.Map.Entry<String, java.util.List<String>> entry : params.entrySet()) {
+                if ("password".equalsIgnoreCase(entry.getKey()) || "cvc".equalsIgnoreCase(entry.getKey())) {
+                    map.put(entry.getKey(), "******");
+                } else if ("pan".equalsIgnoreCase(entry.getKey())) {
+                    String panVal = entry.getValue() != null && !entry.getValue().isEmpty() ? entry.getValue().get(0) : "";
+                    map.put(entry.getKey(), "pan=***" + (panVal.length() > 4 ? panVal.substring(panVal.length() - 4) : ""));
+                } else {
+                    map.put(entry.getKey(), entry.getValue() != null && entry.getValue().size() == 1 ? entry.getValue().get(0) : entry.getValue());
+                }
+            }
+        }
+        return map;
     }
 
     private String maskSensitive(String input) {

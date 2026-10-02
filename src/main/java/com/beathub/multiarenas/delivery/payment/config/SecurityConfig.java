@@ -29,7 +29,8 @@ public class SecurityConfig {
             "/swagger-ui/**",
             "/swagger-ui.html",
             "/actuator/**",
-            "/webhook/**" // Endpoints públicos para webhooks/callbacks de Credibanco
+            "/webhook/**", // Endpoints públicos para webhooks/callbacks de Credibanco
+            "/grupos/codigo/**" // Consulta pública de grupo por enlace de invitación / QR
     };
 
     @Bean

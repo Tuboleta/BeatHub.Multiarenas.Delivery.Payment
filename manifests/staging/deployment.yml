@@ -42,6 +42,24 @@ spec:
               value: "404E635266556A586E3272357538782F413F4428472B4B6250645367566B5970"
             - name: JWT_ISSUER
               value: "beathub-auth-service"
+            - name: CREDIBANCO_BASE_URL
+              value: "https://ecouat.credibanco.com/payment/rest"
+            - name: CREDIBANCO_USERNAME
+              value: "DACASIGNAVNP61-api"
+            - name: CREDIBANCO_PASSWORD
+              value: "DACASIGNAVNP61-api"
+            - name: CREDIBANCO_SECRET_KEY_HMAC
+              value: "TEST_CALLBACK_KEY"
+            - name: CREDIBANCO_CURRENCY_CODE
+              value: "170"
+            - name: CREDIBANCO_MCC_TRAVEL_AGENCY
+              value: "false"
+            - name: CREDIBANCO_PROXY_BASE_URL
+              value: "https://ecouat.credibanco.com/proxy/rest"
+            - name: SERVICES_ORDERING_URL
+              value: "http://beathubmultiarenasdeliveryordering.multiarenas.svc.cluster.local/api/v1/ordering"
+            - name: SERVICES_AUTH_URL
+              value: "http://beathubmultiarenasdeliveryauth.multiarenas.svc.cluster.local/api/v1/auth"
           resources:
             requests:
               cpu: "250m"

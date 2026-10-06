@@ -41,6 +41,12 @@ class PaymentServiceImplTest {
     private GrupoPagoRepository grupoPagoRepository;
 
     @Mock
+    private ClientePagoRepository clientePagoRepository;
+
+    @Mock
+    private TarjetaClientePagoRepository tarjetaClientePagoRepository;
+
+    @Mock
     private CredibancoRestClient credibancoClient;
 
     @Mock
@@ -135,5 +141,85 @@ class PaymentServiceImplTest {
 
         // Debe notificar a Ordering que el pedido fue completado al 100%
         verify(orderingClient).updateOrderStatus(eq(99L), eq(2), contains("Vaca/Pago grupal 100% completado"), isNull());
+    }
+
+    @Test
+    @DisplayName("Pago con token / One-Click exitoso: debita tarjeta guardada y aprueba pedido")
+    void payWithToken_Exitoso() {
+        com.beathub.multiarenas.delivery.payment.client.dto.CredibancoRegisterResponse regResp =
+                new com.beathub.multiarenas.delivery.payment.client.dto.CredibancoRegisterResponse();
+        regResp.setOrderId("CRED-ORDER-TOKEN-123");
+
+        com.beathub.multiarenas.delivery.payment.client.dto.CredibancoPaymentOrderResponse payResp =
+                new com.beathub.multiarenas.delivery.payment.client.dto.CredibancoPaymentOrderResponse();
+        payResp.setErrorCode("0");
+        payResp.setRbsOrderId("AUTH-TOKEN-789");
+
+        when(tipoPagoRepository.findById(anyInt())).thenReturn(Optional.of(new TipoPago(1, "Pago Único", "Descripción", 1, LocalDateTime.now(), 1L)));
+        when(medioPagoRepository.findById(anyInt())).thenReturn(Optional.of(new MedioPago(1, "Tarjetas", 1, LocalDateTime.now(), 1L)));
+        when(pedidoPagoRepository.save(any(PedidoPago.class))).thenAnswer(i -> i.getArgument(0));
+
+        when(credibancoClient.registerOrder(any(), any(), any(), any(), any(), any(), any(), any(), any()))
+                .thenReturn(regResp);
+        when(credibancoClient.paymentOrderBinding(eq("CRED-ORDER-TOKEN-123"), eq("BIND-XYZ-999"), eq("123"), any(), eq("1"), eq(5L)))
+                .thenReturn(payResp);
+
+        com.beathub.multiarenas.delivery.payment.dto.request.PayWithTokenRequest request =
+                com.beathub.multiarenas.delivery.payment.dto.request.PayWithTokenRequest.builder()
+                        .pedidoId(99L)
+                        .monto(new BigDecimal("45000.00"))
+                        .bindingId("BIND-XYZ-999")
+                        .cvc("123")
+                        .tipoPagoId(1)
+                        .description("Pago One-Click Pedido #99")
+                        .build();
+
+        com.beathub.multiarenas.delivery.payment.dto.response.PaymentTokenResponse response =
+                paymentService.payWithToken(request, "1", 5L, "127.0.0.1");
+
+        assertNotNull(response);
+        assertEquals(2, response.getEstadoId());
+        assertEquals("APROBADO", response.getEstadoNombre());
+        assertEquals("AUTH-TOKEN-789", response.getAuthCode());
+        assertFalse(response.isRequiere3ds());
+        verify(orderingClient).updateOrderStatus(eq(99L), eq(2), any(), any());
+    }
+
+    @Test
+    @DisplayName("Listar tarjetas guardadas del usuario: devuelve tarjetas activas tokenizadas")
+    void getUserCards_Exitoso() {
+        ClientePago cp = ClientePago.builder()
+                .id(1L)
+                .arenaUsuarioId(5L)
+                .bindingId("BIND-XYZ-999")
+                .tarjetaEnmascarada("411111******1111")
+                .estadoId(1)
+                .build();
+
+        TarjetaClientePago tcp = TarjetaClientePago.builder()
+                .id(100L)
+                .clientePago(cp)
+                .tarjetaId("BIND-XYZ-999")
+                .tarjetaEnmascarada("411111******1111")
+                .franquicia("VISA")
+                .expiracion("12/28")
+                .titular("CARLOS GOMEZ")
+                .esPredeterminada(true)
+                .estadoId(1)
+                .creacionFecha(LocalDateTime.now())
+                .build();
+
+        when(tarjetaClientePagoRepository.findByClientePagoArenaUsuarioIdAndEstadoId(5L, 1))
+                .thenReturn(java.util.List.of(tcp));
+
+        java.util.List<com.beathub.multiarenas.delivery.payment.dto.response.TarjetaGuardadaResponse> tarjetas =
+                paymentService.getUserCards("1", 5L);
+
+        assertNotNull(tarjetas);
+        assertEquals(1, tarjetas.size());
+        assertEquals("BIND-XYZ-999", tarjetas.get(0).getBindingId());
+        assertEquals("411111******1111", tarjetas.get(0).getTarjetaEnmascarada());
+        assertEquals("VISA", tarjetas.get(0).getFranquicia());
+        assertTrue(tarjetas.get(0).getEsPredeterminada());
     }
 }

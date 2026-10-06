@@ -1,8 +1,6 @@
 package com.beathub.multiarenas.delivery.payment.controller;
 
-import com.beathub.multiarenas.delivery.payment.dto.request.InitPaymentRequest;
-import com.beathub.multiarenas.delivery.payment.dto.request.RefundPaymentRequest;
-import com.beathub.multiarenas.delivery.payment.dto.request.VerifyCardRequest;
+import com.beathub.multiarenas.delivery.payment.dto.request.*;
 import com.beathub.multiarenas.delivery.payment.dto.response.*;
 import com.beathub.multiarenas.delivery.payment.service.PaymentService;
 import com.beathub.multiarenas.delivery.payment.security.SecurityUtils;
@@ -84,6 +82,83 @@ public class PaymentController {
         Long usuarioId = resolveUsuarioId(httpRequest);
 
         VerifyCardResponse response = paymentService.verifyCard(request, arenaId, usuarioId);
+        return ResponseEntity.ok(ApiResponse.ok(response));
+    }
+
+    @PostMapping("/pagar-token")
+    @Operation(summary = "Pagar con tarjeta guardada (Token / One-Click)", description = "Ejecuta cobro directo utilizando el bindingId tokenizado en Credibanco sin requerir reingresar los datos de la tarjeta")
+    public ResponseEntity<ApiResponse<PaymentTokenResponse>> payWithToken(
+            @Valid @RequestBody PayWithTokenRequest request,
+            HttpServletRequest httpRequest
+    ) {
+        String arenaId = resolveArenaId(httpRequest);
+        Long usuarioId = resolveUsuarioId(httpRequest);
+        String ipCliente = httpRequest.getRemoteAddr();
+
+        PaymentTokenResponse response = paymentService.payWithToken(request, arenaId, usuarioId, ipCliente);
+        return ResponseEntity.ok(ApiResponse.ok(response, response.getMensaje()));
+    }
+
+    @GetMapping("/tarjetas/mis-tarjetas")
+    @Operation(summary = "Listar tarjetas guardadas del usuario", description = "Devuelve el listado de tarjetas activas tokenizadas del usuario autenticado")
+    public ResponseEntity<ApiResponse<java.util.List<TarjetaGuardadaResponse>>> getMyCards(
+            HttpServletRequest httpRequest
+    ) {
+        String arenaId = resolveArenaId(httpRequest);
+        Long usuarioId = resolveUsuarioId(httpRequest);
+
+        java.util.List<TarjetaGuardadaResponse> tarjetas = paymentService.getUserCards(arenaId, usuarioId);
+        return ResponseEntity.ok(ApiResponse.ok(tarjetas));
+    }
+
+    @PostMapping("/tarjetas/guardar")
+    @Operation(summary = "Guardar / Vincular tarjeta tokenizada", description = "Registra un token bindingId asociado al usuario para futuros cobros")
+    public ResponseEntity<ApiResponse<TarjetaGuardadaResponse>> saveCard(
+            @Valid @RequestBody SaveCardBindingRequest request,
+            HttpServletRequest httpRequest
+    ) {
+        String arenaId = resolveArenaId(httpRequest);
+        Long usuarioId = resolveUsuarioId(httpRequest);
+
+        TarjetaGuardadaResponse response = paymentService.saveCardBinding(request, arenaId, usuarioId);
+        return ResponseEntity.ok(ApiResponse.ok(response, "Tarjeta vinculada exitosamente"));
+    }
+
+    @DeleteMapping("/tarjetas/{tarjetaId}")
+    @Operation(summary = "Eliminar / Desvincular tarjeta", description = "Desactiva la tarjeta del usuario y solicita unBindCard.do a Credibanco")
+    public ResponseEntity<ApiResponse<Void>> deleteCard(
+            @PathVariable Long tarjetaId,
+            HttpServletRequest httpRequest
+    ) {
+        String arenaId = resolveArenaId(httpRequest);
+        Long usuarioId = resolveUsuarioId(httpRequest);
+
+        paymentService.deleteUserCard(tarjetaId, arenaId, usuarioId);
+        return ResponseEntity.ok(ApiResponse.ok(null, "Tarjeta desvinculada exitosamente"));
+    }
+
+    @PutMapping("/tarjetas/{tarjetaId}/predeterminada")
+    @Operation(summary = "Marcar tarjeta como predeterminada", description = "Establece la tarjeta seleccionada como el método preferido del cliente")
+    public ResponseEntity<ApiResponse<Void>> setDefaultCard(
+            @PathVariable Long tarjetaId,
+            HttpServletRequest httpRequest
+    ) {
+        String arenaId = resolveArenaId(httpRequest);
+        Long usuarioId = resolveUsuarioId(httpRequest);
+
+        paymentService.setDefaultCard(tarjetaId, arenaId, usuarioId);
+        return ResponseEntity.ok(ApiResponse.ok(null, "Tarjeta configurada como predeterminada"));
+    }
+
+    @GetMapping("/tarjetas/credibanco-bindings")
+    @Operation(summary = "Sincronizar tarjetas desde Credibanco", description = "Consulta directamente las tarjetas vinculadas en Credibanco con getBindings.do")
+    public ResponseEntity<ApiResponse<com.beathub.multiarenas.delivery.payment.client.dto.CredibancoGetBindingsResponse>> syncBindings(
+            HttpServletRequest httpRequest
+    ) {
+        String arenaId = resolveArenaId(httpRequest);
+        Long usuarioId = resolveUsuarioId(httpRequest);
+
+        var response = paymentService.syncCredibancoBindings(arenaId, usuarioId);
         return ResponseEntity.ok(ApiResponse.ok(response));
     }
 

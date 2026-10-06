@@ -47,6 +47,16 @@ X-Arena-Id: <ID_ARENA>             # Delimita las llaves y terminal Credibanco d
 | `POST` | `/api/v1/payment/transacciones/reembolso` | ✅ Sí (`ADMIN`) | Ejecutar solicitud de reversión o reembolso ante Credibanco. |
 | `POST` | `/api/v1/payment/transacciones/tarjetas/verificar` | ✅ Sí | Validar autenticidad de tarjeta en Credibanco (`verifyCard.do`). |
 
+### Tokenización y Tarjetas Guardadas (One-Click / Card-on-File)
+| Método | Endpoint Gateway | Requiere Auth | Resumen |
+| :---: | :--- | :---: | :--- |
+| `POST` | `/api/v1/payment/transacciones/pagar-token` | ✅ Sí | Cobro One-Click utilizando un token/bindingId previamente guardado. |
+| `GET` | `/api/v1/payment/transacciones/tarjetas/mis-tarjetas` | ✅ Sí | Listar tarjetas activas tokenizadas del usuario autenticado. |
+| `POST` | `/api/v1/payment/transacciones/tarjetas/guardar` | ✅ Sí | Vincular y guardar un token `bindingId` de tarjeta para el usuario. |
+| `DELETE`| `/api/v1/payment/transacciones/tarjetas/{tarjetaId}` | ✅ Sí | Desvincular y eliminar una tarjeta guardada (`unBindCard.do`). |
+| `PUT` | `/api/v1/payment/transacciones/tarjetas/{tarjetaId}/predeterminada` | ✅ Sí | Marcar tarjeta guardada como método de pago preferido. |
+| `GET` | `/api/v1/payment/transacciones/tarjetas/credibanco-bindings` | ✅ Sí | Consultar bindings remotos directamente en la pasarela Credibanco (`getBindings.do`). |
+
 ### Grupos de Pago Compartido (La Vaca / Split Payment)
 | Método | Endpoint Gateway | Requiere Auth | Resumen |
 | :---: | :--- | :---: | :--- |
@@ -315,3 +325,186 @@ Endpoint público expuesto en Internet al cual Credibanco notifica de manera as�
 
 #### Respuesta esperada por Credibanco:
 `200 OK` con texto plano `"OK"`.
+
+---
+
+## 🔐 7. Tokenización de Tarjetas y Pagos One-Click (Card-on-File)
+
+Permite al cliente realizar compras instantáneas utilizando tarjetas guardadas previamente en la pasarela segura de Credibanco (tecnología SmartVista / RBS eCommerce). Cumple estrictamente con la normativa PCI-DSS: el microservicio y las bases de datos locales solo almacenan el token alfanumérico (`bindingId`) y el PAN enmascarado (`**** 1111`), sin retener información sensible.
+
+### 7.1 Pagar con Tarjeta Guardada / Token (`POST /transacciones/pagar-token`)
+Ejecuta el débito directamente contra el `bindingId` de Credibanco. Si el banco emisor aprueba de inmediato (frictionless), la transacción queda `APROBADA` y se notifica al servicio de `Ordering` para enviar a cocina TCPOS. Si el banco requiere autenticación 3DS, devuelve la URL de redirección segura (`redirect3dsUrl`).
+
+- **Método:** `POST`
+- **URL Gateway:** `http://localhost:8000/api/v1/payment/transacciones/pagar-token`
+- **URL Directa:** `http://localhost:8083/api/v1/payment/transacciones/pagar-token`
+- **Headers:**
+  - `Authorization: Bearer <TOKEN_JWT>`
+  - `X-Arena-Id: 1`
+  - `Content-Type: application/json`
+
+#### Request Body
+```json
+{
+  "pedidoId": 105,
+  "monto": 45000.00,
+  "bindingId": "a1b2c3d4-5678-90ab-cdef-1234567890ab",
+  "cvc": "123",
+  "tipoPagoId": 1,
+  "description": "Pago 1-Click Pedido #105"
+}
+```
+
+#### Respuesta `200 OK` (Aprobado Inmediato)
+```json
+{
+  "success": true,
+  "message": "Pago procesado exitosamente",
+  "data": {
+    "pedidoPagoId": 49,
+    "pedidoId": 105,
+    "referenciaPago": "PAY-TOK-1728145200-A1B2C3",
+    "credibancoOrderId": "c5a89b70-1234-4567-89ab-cdef01234567",
+    "estadoId": 2,
+    "estadoNombre": "APROBADO",
+    "monto": 45000.00,
+    "moneda": "COP",
+    "authCode": "098765",
+    "actionCode": "0",
+    "requiere3ds": false,
+    "fechaPago": "2026-10-05T22:15:00"
+  }
+}
+```
+
+#### cURL
+```bash
+curl -X POST "http://localhost:8000/api/v1/payment/transacciones/pagar-token" \
+  -H "Authorization: Bearer <TOKEN_JWT>" \
+  -H "X-Arena-Id: 1" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "pedidoId": 105,
+    "monto": 45000.00,
+    "bindingId": "a1b2c3d4-5678-90ab-cdef-1234567890ab",
+    "cvc": "123",
+    "description": "Compra 1-Click Pedido #105"
+  }'
+```
+
+---
+
+### 7.2 Listar Tarjetas Guardadas del Usuario (`GET /transacciones/tarjetas/mis-tarjetas`)
+Devuelve la lista de tarjetas activas que el usuario tiene disponibles para seleccionar en el checkout.
+
+- **Método:** `GET`
+- **URL Gateway:** `http://localhost:8000/api/v1/payment/transacciones/tarjetas/mis-tarjetas`
+
+#### Respuesta `200 OK`
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "id": 1,
+      "clientePagoId": 10,
+      "bindingId": "a1b2c3d4-5678-90ab-cdef-1234567890ab",
+      "tarjetaEnmascarada": "411111******1111",
+      "franquicia": "VISA",
+      "expiracion": "12/28",
+      "titular": "CARLOS GOMEZ",
+      "esPredeterminada": true,
+      "estadoId": 1
+    }
+  ]
+}
+```
+
+#### cURL
+```bash
+curl -X GET "http://localhost:8000/api/v1/payment/transacciones/tarjetas/mis-tarjetas" \
+  -H "Authorization: Bearer <TOKEN_JWT>" \
+  -H "X-Arena-Id: 1"
+```
+
+---
+
+### 7.3 Guardar / Asociar Tarjeta Tokenizada (`POST /transacciones/tarjetas/guardar`)
+Registra manualmente un token `bindingId` retornado por Credibanco en la billetera del usuario.
+
+- **Método:** `POST`
+- **URL Gateway:** `http://localhost:8000/api/v1/payment/transacciones/tarjetas/guardar`
+
+#### Request Body
+```json
+{
+  "bindingId": "a1b2c3d4-5678-90ab-cdef-1234567890ab",
+  "tarjetaEnmascarada": "411111******1111",
+  "franquicia": "VISA",
+  "expiracion": "12/28",
+  "titular": "CARLOS GOMEZ",
+  "esPredeterminada": true
+}
+```
+
+#### cURL
+```bash
+curl -X POST "http://localhost:8000/api/v1/payment/transacciones/tarjetas/guardar" \
+  -H "Authorization: Bearer <TOKEN_JWT>" \
+  -H "X-Arena-Id: 1" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "bindingId": "a1b2c3d4-5678-90ab-cdef-1234567890ab",
+    "tarjetaEnmascarada": "411111******1111",
+    "franquicia": "VISA",
+    "expiracion": "12/28",
+    "titular": "CARLOS GOMEZ",
+    "esPredeterminada": true
+  }'
+```
+
+---
+
+### 7.4 Eliminar / Desvincular Tarjeta Guardada (`DELETE /transacciones/tarjetas/{tarjetaId}`)
+Inactiva la tarjeta del usuario y ejecuta la solicitud `unBindCard.do` ante Credibanco.
+
+- **Método:** `DELETE`
+- **URL Gateway:** `http://localhost:8000/api/v1/payment/transacciones/tarjetas/1`
+
+#### cURL
+```bash
+curl -X DELETE "http://localhost:8000/api/v1/payment/transacciones/tarjetas/1" \
+  -H "Authorization: Bearer <TOKEN_JWT>" \
+  -H "X-Arena-Id: 1"
+```
+
+---
+
+### 7.5 Marcar Tarjeta como Predeterminada (`PUT /transacciones/tarjetas/{tarjetaId}/predeterminada`)
+Establece la tarjeta seleccionada como predeterminada y retira la marca de las demás.
+
+- **Método:** `PUT`
+- **URL Gateway:** `http://localhost:8000/api/v1/payment/transacciones/tarjetas/1/predeterminada`
+
+#### cURL
+```bash
+curl -X PUT "http://localhost:8000/api/v1/payment/transacciones/tarjetas/1/predeterminada" \
+  -H "Authorization: Bearer <TOKEN_JWT>" \
+  -H "X-Arena-Id: 1"
+```
+
+---
+
+### 7.6 Sincronizar Bindings Remotos desde Credibanco (`GET /transacciones/tarjetas/credibanco-bindings`)
+Consulta directamente el servicio `getBindings.do` de Credibanco para el usuario autenticado y sincroniza las tarjetas activas.
+
+- **Método:** `GET`
+- **URL Gateway:** `http://localhost:8000/api/v1/payment/transacciones/tarjetas/credibanco-bindings`
+
+#### cURL
+```bash
+curl -X GET "http://localhost:8000/api/v1/payment/transacciones/tarjetas/credibanco-bindings" \
+  -H "Authorization: Bearer <TOKEN_JWT>" \
+  -H "X-Arena-Id: 1"
+```
+

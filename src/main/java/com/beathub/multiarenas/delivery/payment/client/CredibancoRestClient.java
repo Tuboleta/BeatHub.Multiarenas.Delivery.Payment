@@ -312,6 +312,209 @@ public class CredibancoRestClient {
         }
     }
 
+    /**
+     * 9.2.9 Solicitud de pago con tarjeta tokenizada (paymentOrderBinding.do)
+     */
+    public CredibancoPaymentOrderResponse paymentOrderBinding(
+            String mdOrder,
+            String bindingId,
+            String cvc,
+            String ip,
+            String arenaId,
+            Long usuarioId
+    ) {
+        String targetUrl = properties.getBaseUrl() + "/paymentOrderBinding.do";
+        LocalDateTime startTime = LocalDateTime.now();
+
+        MultiValueMap<String, String> params = new LinkedMultiValueMap<>();
+        params.add("userName", properties.getUsername());
+        params.add("password", properties.getPassword());
+        params.add("mdOrder", mdOrder);
+        params.add("bindingId", bindingId);
+        if (cvc != null && !cvc.isBlank()) {
+            params.add("cvc", cvc);
+        }
+        if (ip != null && !ip.isBlank()) {
+            params.add("ip", ip);
+        }
+
+        java.util.Map<String, Object> maskedMap = new java.util.LinkedHashMap<>();
+        maskedMap.put("mdOrder", mdOrder);
+        maskedMap.put("bindingId", bindingId);
+        if (cvc != null && !cvc.isBlank()) {
+            maskedMap.put("cvc", "******");
+        }
+        if (ip != null) {
+            maskedMap.put("ip", ip);
+        }
+        String requestStr = formatRequestLog("POST", targetUrl, maskedMap);
+
+        CredibancoPaymentOrderResponse response = null;
+        Integer httpStatus = 200;
+        String responseStr = "";
+
+        try {
+            responseStr = restClientBuilder.build()
+                    .post()
+                    .uri(targetUrl)
+                    .contentType(MediaType.APPLICATION_FORM_URLENCODED)
+                    .accept(MediaType.APPLICATION_JSON, MediaType.TEXT_PLAIN)
+                    .body(params)
+                    .retrieve()
+                    .body(String.class);
+
+            log.info("Credibanco paymentOrderBinding raw response: {}", responseStr);
+            if (responseStr != null && !responseStr.isBlank()) {
+                response = objectMapper.readValue(responseStr, CredibancoPaymentOrderResponse.class);
+            }
+            return response;
+        } catch (HttpStatusCodeException ex) {
+            httpStatus = ex.getStatusCode().value();
+            responseStr = ex.getResponseBodyAsString();
+            log.error("Error HTTP ({}) al ejecutar pago con token en Credibanco: {}", httpStatus, responseStr);
+            throw new CredibancoApiException(String.valueOf(httpStatus), "Error de comunicación con Credibanco: " + responseStr, ex);
+        } catch (Exception ex) {
+            httpStatus = 500;
+            if (responseStr == null || responseStr.isBlank()) {
+                responseStr = "Exception: " + ex.getMessage();
+            }
+            log.error("Error al ejecutar pago con token en Credibanco: {}", ex.getMessage());
+            throw new CredibancoApiException("GATEWAY_ERROR", "Error al procesar pago tokenizado en Credibanco: " + ex.getMessage(), ex);
+        } finally {
+            auditService.logExternalCall(
+                    arenaId,
+                    usuarioId,
+                    "CREDIBANCO_PAYMENT_ORDER_BINDING",
+                    requestStr,
+                    responseStr,
+                    startTime,
+                    LocalDateTime.now(),
+                    httpStatus,
+                    (response != null && response.isSuccessful()) ? "SUCCESS" : "FAILED"
+            );
+        }
+    }
+
+    /**
+     * 9.2.10 Consulta de tarjetas vinculadas del cliente (getBindings.do)
+     */
+    public CredibancoGetBindingsResponse getBindings(String clientId, String arenaId, Long usuarioId) {
+        String targetUrl = properties.getBaseUrl() + "/getBindings.do";
+        LocalDateTime startTime = LocalDateTime.now();
+
+        MultiValueMap<String, String> params = new LinkedMultiValueMap<>();
+        params.add("userName", properties.getUsername());
+        params.add("password", properties.getPassword());
+        params.add("clientId", clientId);
+
+        String requestStr = formatRequestLog("POST", targetUrl, toMaskedMap(params));
+        CredibancoGetBindingsResponse response = null;
+        Integer httpStatus = 200;
+        String responseStr = "";
+
+        try {
+            responseStr = restClientBuilder.build()
+                    .post()
+                    .uri(targetUrl)
+                    .contentType(MediaType.APPLICATION_FORM_URLENCODED)
+                    .accept(MediaType.APPLICATION_JSON, MediaType.TEXT_PLAIN)
+                    .body(params)
+                    .retrieve()
+                    .body(String.class);
+
+            log.info("Credibanco getBindings raw response: {}", responseStr);
+            if (responseStr != null && !responseStr.isBlank()) {
+                response = objectMapper.readValue(responseStr, CredibancoGetBindingsResponse.class);
+            }
+            return response;
+        } catch (HttpStatusCodeException ex) {
+            httpStatus = ex.getStatusCode().value();
+            responseStr = ex.getResponseBodyAsString();
+            log.error("Error HTTP ({}) al consultar bindings en Credibanco: {}", httpStatus, responseStr);
+            throw new CredibancoApiException(String.valueOf(httpStatus), "Error de comunicación con Credibanco: " + responseStr, ex);
+        } catch (Exception ex) {
+            httpStatus = 500;
+            if (responseStr == null || responseStr.isBlank()) {
+                responseStr = "Exception: " + ex.getMessage();
+            }
+            log.error("Error al consultar bindings en Credibanco: {}", ex.getMessage());
+            throw new CredibancoApiException("GATEWAY_ERROR", "Error al consultar tarjetas en Credibanco: " + ex.getMessage(), ex);
+        } finally {
+            auditService.logExternalCall(
+                    arenaId,
+                    usuarioId,
+                    "CREDIBANCO_GET_BINDINGS",
+                    requestStr,
+                    responseStr,
+                    startTime,
+                    LocalDateTime.now(),
+                    httpStatus,
+                    (response != null && response.isSuccessful()) ? "SUCCESS" : "FAILED"
+            );
+        }
+    }
+
+    /**
+     * 9.2.11 Desvinculación de tarjeta (unBindCard.do)
+     */
+    public boolean unBindCard(String bindingId, String arenaId, Long usuarioId) {
+        String targetUrl = properties.getBaseUrl() + "/unBindCard.do";
+        LocalDateTime startTime = LocalDateTime.now();
+
+        MultiValueMap<String, String> params = new LinkedMultiValueMap<>();
+        params.add("userName", properties.getUsername());
+        params.add("password", properties.getPassword());
+        params.add("bindingId", bindingId);
+
+        String requestStr = formatRequestLog("POST", targetUrl, toMaskedMap(params));
+        Integer httpStatus = 200;
+        String responseStr = "";
+        boolean success = false;
+
+        try {
+            responseStr = restClientBuilder.build()
+                    .post()
+                    .uri(targetUrl)
+                    .contentType(MediaType.APPLICATION_FORM_URLENCODED)
+                    .accept(MediaType.APPLICATION_JSON, MediaType.TEXT_PLAIN)
+                    .body(params)
+                    .retrieve()
+                    .body(String.class);
+
+            log.info("Credibanco unBindCard raw response: {}", responseStr);
+            if (responseStr != null && !responseStr.isBlank()) {
+                com.fasterxml.jackson.databind.JsonNode node = objectMapper.readTree(responseStr);
+                String errorCode = node.has("errorCode") ? node.get("errorCode").asText() : null;
+                success = "0".equals(errorCode);
+            }
+            return success;
+        } catch (HttpStatusCodeException ex) {
+            httpStatus = ex.getStatusCode().value();
+            responseStr = ex.getResponseBodyAsString();
+            log.error("Error HTTP ({}) al desvincular tarjeta en Credibanco: {}", httpStatus, responseStr);
+            throw new CredibancoApiException(String.valueOf(httpStatus), "Error de comunicación con Credibanco: " + responseStr, ex);
+        } catch (Exception ex) {
+            httpStatus = 500;
+            if (responseStr == null || responseStr.isBlank()) {
+                responseStr = "Exception: " + ex.getMessage();
+            }
+            log.error("Error al desvincular tarjeta en Credibanco: {}", ex.getMessage());
+            throw new CredibancoApiException("GATEWAY_ERROR", "Error al desvincular tarjeta en Credibanco: " + ex.getMessage(), ex);
+        } finally {
+            auditService.logExternalCall(
+                    arenaId,
+                    usuarioId,
+                    "CREDIBANCO_UNBIND_CARD",
+                    requestStr,
+                    responseStr,
+                    startTime,
+                    LocalDateTime.now(),
+                    httpStatus,
+                    success ? "SUCCESS" : "FAILED"
+            );
+        }
+    }
+
     private String formatRequestLog(String method, String endpoint, Object body) {
         try {
             java.util.Map<String, Object> logMap = new java.util.LinkedHashMap<>();

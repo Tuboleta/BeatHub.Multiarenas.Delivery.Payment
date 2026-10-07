@@ -54,8 +54,9 @@ credibanco:
   password: ${CREDIBANCO_PASSWORD:TEST_PASSWORD}
   secret-key-hmac: ${CREDIBANCO_SECRET_KEY_HMAC:TEST_CALLBACK_KEY}
   currency-code: ${CREDIBANCO_CURRENCY_CODE:170}
-  default-return-url: ${CREDIBANCO_DEFAULT_RETURN_URL:}
-  default-fail-url: ${CREDIBANCO_DEFAULT_FAIL_URL:}
+  default-return-url: ${CREDIBANCO_DEFAULT_RETURN_URL:http://localhost:3000/checkout/payment-return}
+  default-fail-url: ${CREDIBANCO_DEFAULT_FAIL_URL:http://localhost:3000/checkout/payment-return?status=failed}
+  public-webhook-url: ${CREDIBANCO_PUBLIC_WEBHOOK_URL:https://delivery-api-stg.beat-hub.com/api/v1/payment/webhook/credibanco/callback}
   mcc-travel-agency: ${CREDIBANCO_MCC_TRAVEL_AGENCY:false}
   proxy-base-url: ${CREDIBANCO_PROXY_BASE_URL:https://ecouat.credibanco.com/proxy/rest}
 

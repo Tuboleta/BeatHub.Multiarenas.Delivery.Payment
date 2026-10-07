@@ -21,10 +21,7 @@ public class InitPaymentRequest {
     private Integer medioPagoId;
     private Long grupoPagoUsuarioId;
 
-    @jakarta.validation.constraints.NotBlank(message = "El returnUrl es obligatorio (URL de retorno al front tras pago exitoso)")
     private String returnUrl;
-
-    @jakarta.validation.constraints.NotBlank(message = "El failUrl es obligatorio (URL de retorno al front tras pago fallido)")
     private String failUrl;
     private String description;
 

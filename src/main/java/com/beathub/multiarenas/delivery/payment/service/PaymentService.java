@@ -14,6 +14,8 @@ public interface PaymentService {
     PaymentInitResponse initiatePayment(InitPaymentRequest request, String arenaId, Long usuarioId);
     PaymentStatusResponse queryPaymentStatus(Long pedidoPagoId, String arenaId, Long usuarioId);
     PaymentStatusResponse queryPaymentStatusByReference(String referenciaPago, String arenaId, Long usuarioId);
+    PaymentStatusResponse queryPaymentStatusByPedidoId(Long pedidoId, String arenaId, Long usuarioId);
+    PaymentStatusResponse queryPaymentStatusByCredibancoOrderId(String credibancoOrderId, String arenaId, Long usuarioId);
     void processCredibancoCallback(String mdOrder, String orderNumber, String operation, Integer status, String checksum, String signAlias);
     RefundResponse refundPayment(RefundPaymentRequest request, String arenaId, Long usuarioId);
     VerifyCardResponse verifyCard(VerifyCardRequest request, String arenaId, Long usuarioId);

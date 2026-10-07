@@ -42,6 +42,7 @@ public class GrupoPagoServiceImpl implements GrupoPagoService {
     private final OrderingServiceClient orderingClient;
     private final PaymentService paymentService;
     private final QrCodeGeneratorService qrCodeGeneratorService;
+    private final com.beathub.multiarenas.delivery.payment.client.AuthServiceClient authClient;
 
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     private jakarta.servlet.http.HttpServletRequest httpRequest;
@@ -678,10 +679,31 @@ public class GrupoPagoServiceImpl implements GrupoPagoService {
         BigDecimal pagado = u.getMontoPagado() != null ? u.getMontoPagado() : BigDecimal.ZERO;
         BigDecimal saldo = asignado != null ? asignado.subtract(pagado).max(BigDecimal.ZERO) : BigDecimal.ZERO;
 
+        String nombreUsuario = null;
+        String email = null;
+        if (u.getUsuarioId() != null) {
+            try {
+                var userOpt = authClient.getUsuario(u.getUsuarioId());
+                if (userOpt.isPresent()) {
+                    var user = userOpt.get();
+                    nombreUsuario = user.getNombreCompleto();
+                    email = user.getEmail();
+                }
+            } catch (Exception ex) {
+                log.warn("Error al resolver nombre de usuario para ID {}: {}", u.getUsuarioId(), ex.getMessage());
+            }
+        }
+
+        if (nombreUsuario == null || nombreUsuario.isBlank()) {
+            nombreUsuario = Boolean.TRUE.equals(u.getEsLider()) ? "Líder del grupo" : "Participante #" + u.getId();
+        }
+
         return GrupoPagoUsuarioResponse.builder()
                 .id(u.getId())
                 .grupoPagoId(u.getGrupoPago() != null ? u.getGrupoPago().getId() : null)
                 .usuarioId(u.getUsuarioId())
+                .nombreUsuario(nombreUsuario)
+                .email(email)
                 .montoAsignado(asignado)
                 .montoPagado(pagado)
                 .saldoPendiente(saldo)

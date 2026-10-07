@@ -62,4 +62,22 @@ public class JwtTokenProvider {
         Claims claims = extraerClaims(token);
         return UserPrincipal.create(claims);
     }
+
+    public String generarInternalServiceToken(Long usuarioId) {
+        java.util.Date ahora = new java.util.Date();
+        java.util.Date expiracion = new java.util.Date(ahora.getTime() + jwtProperties.getExpirationMs());
+
+        return Jwts.builder()
+                .subject(usuarioId != null ? String.valueOf(usuarioId) : "1")
+                .claim("usuarioId", usuarioId != null ? usuarioId : 1L)
+                .claim("username", "system-payment-service")
+                .claim("email", "payment-service@beathub.internal")
+                .claim("roles", java.util.List.of("ROLE_SUPER_ADMIN", "ROLE_ADMIN_ARENA"))
+                .claim("scopes", java.util.List.of("api:access"))
+                .issuer(jwtProperties.getIssuer() != null ? jwtProperties.getIssuer() : "beathub-auth-service")
+                .issuedAt(ahora)
+                .expiration(expiracion)
+                .signWith(getSigningKey())
+                .compact();
+    }
 }

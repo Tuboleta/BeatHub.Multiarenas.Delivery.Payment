@@ -16,6 +16,7 @@ public class CredibancoProperties {
     private Integer sessionTimeoutSecs = 1200;
     private String defaultReturnUrl;
     private String defaultFailUrl;
+    private String publicWebhookUrl;
     private Boolean mccTravelAgency = false;
     private String proxyBaseUrl = "https://ecouat.credibanco.com/proxy/rest";
 }

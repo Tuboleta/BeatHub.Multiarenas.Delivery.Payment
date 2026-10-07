@@ -59,6 +59,32 @@ public class PaymentController {
         return ResponseEntity.ok(ApiResponse.ok(response));
     }
 
+    @GetMapping("/pedido/{pedidoId}/estado")
+    @Operation(summary = "Consultar estado de pago por ID de Pedido", description = "Consulta y sincroniza el estado de la transacción asociada al pedido")
+    public ResponseEntity<ApiResponse<PaymentStatusResponse>> getStatusByPedidoId(
+            @PathVariable Long pedidoId,
+            HttpServletRequest httpRequest
+    ) {
+        String arenaId = resolveArenaId(httpRequest);
+        Long usuarioId = resolveUsuarioId(httpRequest);
+
+        PaymentStatusResponse response = paymentService.queryPaymentStatusByPedidoId(pedidoId, arenaId, usuarioId);
+        return ResponseEntity.ok(ApiResponse.ok(response));
+    }
+
+    @GetMapping("/credibanco/{credibancoOrderId}/estado")
+    @Operation(summary = "Consultar estado de pago por Order ID de Credibanco", description = "Consulta y sincroniza el estado mediante el orderId devuelto por Credibanco")
+    public ResponseEntity<ApiResponse<PaymentStatusResponse>> getStatusByCredibancoOrderId(
+            @PathVariable String credibancoOrderId,
+            HttpServletRequest httpRequest
+    ) {
+        String arenaId = resolveArenaId(httpRequest);
+        Long usuarioId = resolveUsuarioId(httpRequest);
+
+        PaymentStatusResponse response = paymentService.queryPaymentStatusByCredibancoOrderId(credibancoOrderId, arenaId, usuarioId);
+        return ResponseEntity.ok(ApiResponse.ok(response));
+    }
+
     @PostMapping("/reembolso")
     @Operation(summary = "Solicitar anulación o reembolso", description = "Ejecuta solicitud refund.do ante Credibanco")
     public ResponseEntity<ApiResponse<RefundResponse>> refundPayment(

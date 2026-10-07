@@ -21,6 +21,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.UUID;
 
 @Service
@@ -86,12 +87,24 @@ public class PaymentServiceImpl implements PaymentService {
 
         pedidoPago = pedidoPagoRepository.save(pedidoPago);
 
+        String returnUrl = (request.getReturnUrl() != null && !request.getReturnUrl().isBlank())
+                ? request.getReturnUrl()
+                : (credibancoProperties.getDefaultReturnUrl() != null && !credibancoProperties.getDefaultReturnUrl().isBlank()
+                    ? credibancoProperties.getDefaultReturnUrl()
+                    : "http://localhost:3000/checkout/payment-return");
+
+        String failUrl = (request.getFailUrl() != null && !request.getFailUrl().isBlank())
+                ? request.getFailUrl()
+                : (credibancoProperties.getDefaultFailUrl() != null && !credibancoProperties.getDefaultFailUrl().isBlank()
+                    ? credibancoProperties.getDefaultFailUrl()
+                    : "http://localhost:3000/checkout/payment-return?status=failed");
+
         // Llamar a Credibanco register.do
         CredibancoRegisterResponse credibancoResp = credibancoClient.registerOrder(
                 referenciaPago,
                 request.getMonto(),
-                request.getReturnUrl(),
-                request.getFailUrl(),
+                returnUrl,
+                failUrl,
                 request.getDescription() != null ? request.getDescription() : "Pedido BeatHub #" + request.getPedidoId(),
                 jsonParamsStr,
                 String.valueOf(usuarioId),
@@ -141,6 +154,26 @@ public class PaymentServiceImpl implements PaymentService {
     public PaymentStatusResponse queryPaymentStatusByReference(String referenciaPago, String arenaId, Long usuarioId) {
         PedidoPago pedidoPago = pedidoPagoRepository.findByReferenciaPago(referenciaPago)
                 .orElseThrow(() -> new ResourceNotFoundException("PedidoPago con referencia " + referenciaPago + " no encontrado"));
+
+        return syncAndMapPaymentStatus(pedidoPago, arenaId, usuarioId);
+    }
+
+    @Override
+    @Transactional
+    public PaymentStatusResponse queryPaymentStatusByPedidoId(Long pedidoId, String arenaId, Long usuarioId) {
+        List<PedidoPago> pagos = pedidoPagoRepository.findByPedidoId(pedidoId);
+        if (pagos.isEmpty()) {
+            throw new ResourceNotFoundException("No se encontró registro de pago para el pedido " + pedidoId);
+        }
+        PedidoPago masReciente = pagos.get(pagos.size() - 1);
+        return syncAndMapPaymentStatus(masReciente, arenaId, usuarioId);
+    }
+
+    @Override
+    @Transactional
+    public PaymentStatusResponse queryPaymentStatusByCredibancoOrderId(String credibancoOrderId, String arenaId, Long usuarioId) {
+        PedidoPago pedidoPago = pedidoPagoRepository.findByCredibancoOrderId(credibancoOrderId)
+                .orElseThrow(() -> new ResourceNotFoundException("PedidoPago no encontrado para Credibanco Order ID: " + credibancoOrderId));
 
         return syncAndMapPaymentStatus(pedidoPago, arenaId, usuarioId);
     }
@@ -233,7 +266,8 @@ public class PaymentServiceImpl implements PaymentService {
         pedidoPago.setMdOrder(mdOrder);
 
         if ("deposited".equalsIgnoreCase(operation) || "approved".equalsIgnoreCase(operation)) {
-            if (Integer.valueOf(1).equals(status)) {
+            boolean isApproved = status == null || Integer.valueOf(1).equals(status) || Integer.valueOf(2).equals(status);
+            if (isApproved) {
                 onPaymentApproved(pedidoPago, "Pago aprobado via webhook Credibanco (" + operation + ")");
             } else {
                 pedidoPago.setEstadoId(3); // Rechazado
@@ -251,6 +285,10 @@ public class PaymentServiceImpl implements PaymentService {
     }
 
     private void onPaymentApproved(PedidoPago pedidoPago, String detailMessage) {
+        if (Integer.valueOf(2).equals(pedidoPago.getEstadoId())) {
+            log.info("El pago con ID {} ya se encontraba en estado Aprobado. Omitiendo reprocesamiento.", pedidoPago.getId());
+            return;
+        }
         pedidoPago.setEstadoId(2); // 2: Aprobado / Deposited
         pedidoPago.setFechaPago(LocalDateTime.now());
         pedidoPagoRepository.save(pedidoPago);

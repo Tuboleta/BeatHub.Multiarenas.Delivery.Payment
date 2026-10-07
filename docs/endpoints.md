@@ -313,7 +313,8 @@ curl -X POST "http://localhost:8000/api/v1/payment/grupos/12/pagar" \
 Endpoint público expuesto en Internet al cual Credibanco notifica de manera asíncrona el resultado de las transacciones (aprobada, declinada, reversada).
 
 - **Métodos:** `GET` / `POST`
-- **URL Gateway:** `http://localhost:8000/api/v1/payment/webhook/credibanco/callback`
+- **URL Gateway Local:** `http://localhost:8000/api/v1/payment/webhook/credibanco/callback`
+- **URL Staging (Ingress):** `https://delivery-api-stg.beat-hub.com/api/v1/payment/webhook/credibanco/callback`
 - **URL Directa:** `http://localhost:8083/api/v1/payment/webhook/credibanco/callback`
 - **Query / Form Params enviados por Credibanco:**
   - `mdOrder`

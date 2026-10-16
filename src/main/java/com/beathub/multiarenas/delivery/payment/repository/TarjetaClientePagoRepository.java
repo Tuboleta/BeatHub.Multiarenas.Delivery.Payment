@@ -11,5 +11,7 @@ import java.util.Optional;
 public interface TarjetaClientePagoRepository extends JpaRepository<TarjetaClientePago, Long> {
     List<TarjetaClientePago> findByClientePagoId(Long clientePagoId);
     List<TarjetaClientePago> findByClientePagoArenaUsuarioIdAndEstadoId(Long arenaUsuarioId, Integer estadoId);
+    List<TarjetaClientePago> findByClientePagoArenaIdAndClientePagoArenaUsuarioIdAndEstadoId(String arenaId, Long arenaUsuarioId, Integer estadoId);
     Optional<TarjetaClientePago> findByIdAndClientePagoArenaUsuarioId(Long id, Long arenaUsuarioId);
+    Optional<TarjetaClientePago> findByIdAndClientePagoArenaIdAndClientePagoArenaUsuarioId(Long id, String arenaId, Long arenaUsuarioId);
 }

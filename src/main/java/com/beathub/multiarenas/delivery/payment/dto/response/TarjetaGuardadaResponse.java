@@ -22,4 +22,8 @@ public class TarjetaGuardadaResponse {
     private Boolean esPredeterminada;
     private Integer estadoId;
     private LocalDateTime creacionFecha;
+    @Builder.Default
+    private Boolean requiere3ds = false;
+    private String redirect3dsUrl;
+    private String mensaje;
 }

@@ -20,24 +20,63 @@ public class CredibancoStatusResponse {
     private String date;
     private String authCode;
     private String terminalId;
+    private String authRefNum;
+    private Long authDateTime;
     private String ip;
+    private String bindingId;
     private Map<String, Object> cardAuthInfo;
     private Map<String, Object> bindingInfo;
     private List<Map<String, Object>> merchantOrderParams;
+    private List<Map<String, Object>> attributes;
+    private List<Map<String, Object>> transactionAttributes;
+
+    public String getMdOrder() {
+        if (attributes != null) {
+            for (Map<String, Object> attr : attributes) {
+                if ("mdOrder".equalsIgnoreCase(String.valueOf(attr.get("name"))) && attr.get("value") != null) {
+                    return attr.get("value").toString();
+                }
+            }
+        }
+        return null;
+    }
+
+    public String getPaymentNetRefNum() {
+        if (transactionAttributes != null) {
+            for (Map<String, Object> attr : transactionAttributes) {
+                if ("paymentNetRefNum".equalsIgnoreCase(String.valueOf(attr.get("name"))) && attr.get("value") != null) {
+                    return attr.get("value").toString();
+                }
+            }
+        }
+        return null;
+    }
 
     public boolean isApproved() {
         // orderStatus = 2 (DEPOSITED / APROBADO)
         return Integer.valueOf(2).equals(orderStatus) || "0".equals(actionCode);
     }
 
+    public boolean isVerifiedOrApproved() {
+        // En Credibanco tras VERIFY: "Después de un registro correcto el pedido tendrá el estado de REVERSADO."
+        // Por tanto orderStatus 2 (aprobado), 4 (reversado) o actionCode 0 o presencia de bindingId confirman verificación válida.
+        return Integer.valueOf(2).equals(orderStatus)
+                || Integer.valueOf(4).equals(orderStatus)
+                || "0".equals(actionCode)
+                || getBindingId() != null;
+    }
+
     public String getBindingId() {
-        if (bindingInfo != null && bindingInfo.get("bindingId") != null) {
+        if (bindingInfo != null && bindingInfo.get("bindingId") != null && !bindingInfo.get("bindingId").toString().isBlank()) {
             return bindingInfo.get("bindingId").toString();
         }
-        if (bindingInfo != null && bindingInfo.get("id") != null) {
+        if (bindingInfo != null && bindingInfo.get("id") != null && !bindingInfo.get("id").toString().isBlank()) {
             return bindingInfo.get("id").toString();
         }
-        if (cardAuthInfo != null && cardAuthInfo.get("bindingId") != null) {
+        if (bindingId != null && !bindingId.isBlank()) {
+            return bindingId;
+        }
+        if (cardAuthInfo != null && cardAuthInfo.get("bindingId") != null && !cardAuthInfo.get("bindingId").toString().isBlank()) {
             return cardAuthInfo.get("bindingId").toString();
         }
         return null;
@@ -60,13 +99,16 @@ public class CredibancoStatusResponse {
     }
 
     public String getExpiration() {
+        String exp = null;
         if (bindingInfo != null && bindingInfo.get("expiryDate") != null) {
-            return bindingInfo.get("expiryDate").toString();
+            exp = bindingInfo.get("expiryDate").toString();
+        } else if (cardAuthInfo != null && cardAuthInfo.get("expiration") != null) {
+            exp = cardAuthInfo.get("expiration").toString();
         }
-        if (cardAuthInfo != null && cardAuthInfo.get("expiration") != null) {
-            return cardAuthInfo.get("expiration").toString();
+        if (exp != null && exp.length() == 6 && exp.matches("\\d{6}")) {
+            return exp.substring(4, 6) + "/" + exp.substring(2, 4);
         }
-        return null;
+        return exp;
     }
 
     public String getCardholderName() {
@@ -82,6 +124,26 @@ public class CredibancoStatusResponse {
         }
         if (cardAuthInfo != null && cardAuthInfo.get("paymentSystem") != null) {
             return cardAuthInfo.get("paymentSystem").toString();
+        }
+        return null;
+    }
+
+    public String getApprovalCode() {
+        if (cardAuthInfo != null && cardAuthInfo.get("approvalCode") != null) {
+            return String.valueOf(cardAuthInfo.get("approvalCode")).trim();
+        }
+        if (authCode != null && !authCode.isBlank()) {
+            return authCode.trim();
+        }
+        if (authRefNum != null && !authRefNum.isBlank()) {
+            return authRefNum.trim();
+        }
+        return null;
+    }
+
+    public String getTerminal() {
+        if (terminalId != null && !terminalId.isBlank()) {
+            return terminalId.trim();
         }
         return null;
     }

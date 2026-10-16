@@ -10,6 +10,8 @@ import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 
+import java.math.BigDecimal;
+import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
 
@@ -33,6 +35,11 @@ public class OrderingServiceClient {
     }
 
     public void updateOrderStatus(Long pedidoId, Integer nuevoEstadoId, String observacion, String authToken) {
+        updateOrderStatus(pedidoId, nuevoEstadoId, observacion, authToken, null, null, null);
+    }
+
+    public void updateOrderStatus(Long pedidoId, Integer nuevoEstadoId, String observacion, String authToken,
+                                  String autorizacion, String terminal, BigDecimal monto) {
         String effectiveToken = resolveAuthToken(authToken);
 
         // Mapeo defensivo de estados de Payment a Ordering:
@@ -52,11 +59,14 @@ public class OrderingServiceClient {
         if (Integer.valueOf(13).equals(orderingEstadoId)) {
             try {
                 String confirmUrl = orderingServiceUrl + "/pedidos/" + pedidoId + "/confirmar-pago";
-                Map<String, Object> confirmBody = Map.of(
-                        "tipoPago", "CREDIBANCO",
-                        "autorizacion", "APROBADO_CREDIBANCO",
-                        "terminal", "CREDIBANCO_WEB"
-                );
+                Map<String, Object> confirmBody = new HashMap<>();
+                confirmBody.put("tipoPago", "CREDIBANCO");
+                confirmBody.put("autorizacion", (autorizacion != null && !autorizacion.isBlank()) ? autorizacion : "APROBADO_CREDIBANCO");
+                confirmBody.put("terminal", (terminal != null && !terminal.isBlank()) ? terminal : "CREDIBANCO_WEB");
+                if (monto != null && monto.compareTo(BigDecimal.ZERO) > 0) {
+                    confirmBody.put("monto", monto);
+                }
+
                 RestClient.RequestHeadersSpec<?> confirmReq = restClientBuilder.build()
                         .post()
                         .uri(confirmUrl)

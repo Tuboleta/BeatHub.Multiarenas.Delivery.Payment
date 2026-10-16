@@ -20,7 +20,10 @@ public interface PaymentService {
     RefundResponse refundPayment(RefundPaymentRequest request, String arenaId, Long usuarioId);
     VerifyCardResponse verifyCard(VerifyCardRequest request, String arenaId, Long usuarioId);
 
-    // Métodos para Tokenización y Tarjetas Guardadas (One-Click)
+    // Métodos para Tokenización y Tarjetas Guardadas (One-Click) con Credibanco
+    TarjetaGuardadaResponse tokenizeCard(com.beathub.multiarenas.delivery.payment.dto.request.TokenizarTarjetaRequest request, String arenaId, Long usuarioId, String ipCliente);
+    IniciarTokenizacionResponse initiateCardTokenization(com.beathub.multiarenas.delivery.payment.dto.request.IniciarTokenizacionRequest request, String arenaId, Long usuarioId);
+    TarjetaGuardadaResponse confirmCardTokenization(com.beathub.multiarenas.delivery.payment.dto.request.ConfirmarTokenizacionRequest request, String arenaId, Long usuarioId);
     PaymentTokenResponse payWithToken(PayWithTokenRequest request, String arenaId, Long usuarioId, String ipCliente);
     List<TarjetaGuardadaResponse> getUserCards(String arenaId, Long usuarioId);
     TarjetaGuardadaResponse saveCardBinding(SaveCardBindingRequest request, String arenaId, Long usuarioId);

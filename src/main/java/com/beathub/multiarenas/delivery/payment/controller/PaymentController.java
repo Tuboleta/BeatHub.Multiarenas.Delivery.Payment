@@ -137,6 +137,20 @@ public class PaymentController {
         return ResponseEntity.ok(ApiResponse.ok(tarjetas));
     }
 
+    @PostMapping("/tarjetas/tokenizar")
+    @Operation(summary = "Tokenizar tarjeta directamente con Credibanco", description = "Valida los datos de la tarjeta (Luhn, formato NOMBRE APELLIDO) y ejecuta el flujo oficial de verificación en Credibanco (register.do VERIFY + paymentorder.do tii=U + getOrderStatusExtended.do) para obtener el bindingId real")
+    public ResponseEntity<ApiResponse<TarjetaGuardadaResponse>> tokenizeCard(
+            @Valid @RequestBody TokenizarTarjetaRequest request,
+            HttpServletRequest httpRequest
+    ) {
+        String arenaId = resolveArenaId(httpRequest);
+        Long usuarioId = resolveUsuarioId(httpRequest);
+        String ipCliente = httpRequest.getRemoteAddr();
+
+        TarjetaGuardadaResponse response = paymentService.tokenizeCard(request, arenaId, usuarioId, ipCliente);
+        return ResponseEntity.ok(ApiResponse.ok(response, response.getMensaje()));
+    }
+
     @PostMapping("/tarjetas/guardar")
     @Operation(summary = "Guardar / Vincular tarjeta tokenizada", description = "Registra un token bindingId asociado al usuario para futuros cobros")
     public ResponseEntity<ApiResponse<TarjetaGuardadaResponse>> saveCard(
@@ -148,6 +162,32 @@ public class PaymentController {
 
         TarjetaGuardadaResponse response = paymentService.saveCardBinding(request, arenaId, usuarioId);
         return ResponseEntity.ok(ApiResponse.ok(response, "Tarjeta vinculada exitosamente"));
+    }
+
+    @PostMapping("/tarjetas/iniciar-tokenizacion")
+    @Operation(summary = "Iniciar tokenización con Formulario Seguro de Credibanco", description = "Registra una orden de verificación con importe 0 y features=VERIFY en Credibanco, retornando la URL segura formUrl para ingreso seguro de tarjeta")
+    public ResponseEntity<ApiResponse<IniciarTokenizacionResponse>> initiateTokenization(
+            @RequestBody IniciarTokenizacionRequest request,
+            HttpServletRequest httpRequest
+    ) {
+        String arenaId = resolveArenaId(httpRequest);
+        Long usuarioId = resolveUsuarioId(httpRequest);
+
+        IniciarTokenizacionResponse response = paymentService.initiateCardTokenization(request, arenaId, usuarioId);
+        return ResponseEntity.ok(ApiResponse.ok(response, response.getMensaje()));
+    }
+
+    @PostMapping("/tarjetas/confirmar-tokenizacion")
+    @Operation(summary = "Confirmar tokenización tras completar formulario Credibanco", description = "Consulta getOrderStatusExtended.do ante Credibanco con el orderId, extrae el token bindingId emitido por Credibanco y guarda la tarjeta en el perfil del cliente")
+    public ResponseEntity<ApiResponse<TarjetaGuardadaResponse>> confirmTokenization(
+            @Valid @RequestBody ConfirmarTokenizacionRequest request,
+            HttpServletRequest httpRequest
+    ) {
+        String arenaId = resolveArenaId(httpRequest);
+        Long usuarioId = resolveUsuarioId(httpRequest);
+
+        TarjetaGuardadaResponse response = paymentService.confirmCardTokenization(request, arenaId, usuarioId);
+        return ResponseEntity.ok(ApiResponse.ok(response, response.getMensaje()));
     }
 
     @DeleteMapping("/tarjetas/{tarjetaId}")

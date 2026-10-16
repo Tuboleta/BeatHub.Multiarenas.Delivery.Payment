@@ -1,5 +1,6 @@
 package com.beathub.multiarenas.delivery.payment.service.impl;
 
+import com.beathub.multiarenas.delivery.payment.client.NotificationServiceClient;
 import com.beathub.multiarenas.delivery.payment.client.OrderingServiceClient;
 import com.beathub.multiarenas.delivery.payment.client.dto.PedidoClientResponse;
 import com.beathub.multiarenas.delivery.payment.dto.request.*;
@@ -43,6 +44,7 @@ public class GrupoPagoServiceImpl implements GrupoPagoService {
     private final PaymentService paymentService;
     private final QrCodeGeneratorService qrCodeGeneratorService;
     private final com.beathub.multiarenas.delivery.payment.client.AuthServiceClient authClient;
+    private final NotificationServiceClient notificationServiceClient;
 
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     private jakarta.servlet.http.HttpServletRequest httpRequest;
@@ -251,6 +253,28 @@ public class GrupoPagoServiceImpl implements GrupoPagoService {
         // Notificar a Ordering Service para vincular el grupo al pedido
         orderingClient.asociarGrupoPago(request.getPedidoId(), grupoPago.getId(), authToken);
 
+        // Despachar invitaciones asíncronas de notificación (Flujo 8: VACA_INVITATION)
+        if (request.getParticipantes() != null && !request.getParticipantes().isEmpty()) {
+            Long arenaIdNumeric = parseArenaId(grupoPago.getArenaId());
+            String urlVaca = pwaBaseUrl + "/vaca/" + grupoPago.getCodigoUnico();
+            for (ParticipanteInicialDto p : request.getParticipantes()) {
+                if (p.getUsuarioId() != null && !p.getUsuarioId().equals(usuarioId)) {
+                    BigDecimal cuota = esLibre ? null : (p.getMontoAsignado() != null ? p.getMontoAsignado() : cuotaPreasignada);
+                    notificationServiceClient.notificarInvitacionVaca(
+                            arenaIdNumeric,
+                            p.getUsuarioId(),
+                            p.getNombre(),
+                            p.getEmail(),
+                            null,
+                            "Líder del Grupo",
+                            grupoPago.getNombre(),
+                            cuota,
+                            urlVaca
+                    );
+                }
+            }
+        }
+
         return mapearAGrupoPagoResponse(grupoPago, usuarioId);
     }
 
@@ -387,6 +411,21 @@ public class GrupoPagoServiceImpl implements GrupoPagoService {
                     .build();
             grupoPagoUsuarioRepository.save(nuevo);
         }
+
+        // Despachar notificación asíncrona de invitación (Flujo 8: VACA_INVITATION)
+        Long arenaIdNumeric = parseArenaId(grupoPago.getArenaId());
+        String urlVaca = pwaBaseUrl + "/vaca/" + grupoPago.getCodigoUnico();
+        notificationServiceClient.notificarInvitacionVaca(
+                arenaIdNumeric,
+                request.getUsuarioId(),
+                null,
+                null,
+                null,
+                "Líder del Grupo",
+                grupoPago.getNombre(),
+                request.getMontoAsignado() != null ? request.getMontoAsignado() : grupoPago.getMontoPreasignado(),
+                urlVaca
+        );
 
         return mapearAGrupoPagoResponse(grupoPago, currentUsuarioId);
     }
@@ -772,6 +811,15 @@ public class GrupoPagoServiceImpl implements GrupoPagoService {
             return pwaBaseUrl.replaceAll("/+$", "");
         }
         return (pwaBaseUrl != null && !pwaBaseUrl.isBlank()) ? pwaBaseUrl : "https://delivery-daviarena-stg.beat-hub.com";
+    }
+
+    private Long parseArenaId(String arenaId) {
+        if (arenaId != null) {
+            try {
+                return Long.parseLong(arenaId);
+            } catch (NumberFormatException ignored) {}
+        }
+        return 1L;
     }
 }
 

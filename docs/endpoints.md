@@ -47,15 +47,17 @@ X-Arena-Id: <ID_ARENA>             # Delimita las llaves y terminal Credibanco d
 | `POST` | `/api/v1/payment/transacciones/reembolso` | ✅ Sí (`ADMIN`) | Ejecutar solicitud de reversión o reembolso ante Credibanco. |
 | `POST` | `/api/v1/payment/transacciones/tarjetas/verificar` | ✅ Sí | Validar autenticidad de tarjeta en Credibanco (`verifyCard.do`). |
 
-### Tokenización y Tarjetas Guardadas (One-Click / Card-on-File)
+### Tokenización y Tarjetas Guardadas (One-Click / Card-on-File con Credibanco)
 | Método | Endpoint Gateway | Requiere Auth | Resumen |
 | :---: | :--- | :---: | :--- |
-| `POST` | `/api/v1/payment/transacciones/pagar-token` | ✅ Sí | Cobro One-Click utilizando un token/bindingId previamente guardado. |
+| `POST` | `/api/v1/payment/transacciones/tarjetas/tokenizar` | ✅ Sí | Tokenizar y verificar tarjeta directamente contra Credibanco (`register.do` VERIFY + `paymentorder.do` tii=U). |
+| `POST` | `/api/v1/payment/transacciones/tarjetas/iniciar-tokenizacion` | ✅ Sí | Iniciar tokenización mediante Formulario Seguro de Credibanco (retorna `formUrl`). |
+| `POST` | `/api/v1/payment/transacciones/tarjetas/confirmar-tokenizacion` | ✅ Sí | Confirmar orden de verificación y extraer token `bindingId` emitido por Credibanco. |
+| `POST` | `/api/v1/payment/transacciones/pagar-token` | ✅ Sí | Cobro One-Click utilizando un token/bindingId verificado en Credibanco. |
 | `GET` | `/api/v1/payment/transacciones/tarjetas/mis-tarjetas` | ✅ Sí | Listar tarjetas activas tokenizadas del usuario autenticado. |
-| `POST` | `/api/v1/payment/transacciones/tarjetas/guardar` | ✅ Sí | Vincular y guardar un token `bindingId` de tarjeta para el usuario. |
 | `DELETE`| `/api/v1/payment/transacciones/tarjetas/{tarjetaId}` | ✅ Sí | Desvincular y eliminar una tarjeta guardada (`unBindCard.do`). |
 | `PUT` | `/api/v1/payment/transacciones/tarjetas/{tarjetaId}/predeterminada` | ✅ Sí | Marcar tarjeta guardada como método de pago preferido. |
-| `GET` | `/api/v1/payment/transacciones/tarjetas/credibanco-bindings` | ✅ Sí | Consultar bindings remotos directamente en la pasarela Credibanco (`getBindings.do`). |
+| `GET` | `/api/v1/payment/transacciones/tarjetas/credibanco-bindings` | ✅ Sí | Sincronizar bindings remotos directamente desde Credibanco (`getBindings.do`). |
 
 ### Grupos de Pago Compartido (La Vaca / Split Payment)
 | Método | Endpoint Gateway | Requiere Auth | Resumen |
@@ -101,12 +103,14 @@ Registra la transacción en base de datos e invoca el servicio `register.do` de 
 | `returnUrl` | `string` | Sí | URL de redirección en Front tras pago exitoso | `"https://app.beathub.com/pago/exitoso"` |
 | `failUrl` | `string` | Sí | URL de redirección en Front si es rechazado | `"https://app.beathub.com/pago/rechazado"` |
 | `description` | `string` | No | Descripción de la compra | `"Pedido #105 - Hamburguesa Clásica"` |
+| `guardarTarjeta` | `boolean` | No | Si es `true`, envía `features=AUTO_PAYMENT` y `clientId` a Credibanco para pagos de recurrencia / guardar tarjeta en el checkout. | `true` |
 
 ```json
 {
   "pedidoId": 105,
   "monto": 69000.00,
   "tipoPagoId": 1,
+  "guardarTarjeta": true,
   "returnUrl": "https://app.beathub.com/pago/exitoso",
   "failUrl": "https://app.beathub.com/pago/fallido",
   "description": "Pedido #105 - BeatHub Delivery"
@@ -430,36 +434,98 @@ curl -X GET "http://localhost:8000/api/v1/payment/transacciones/tarjetas/mis-tar
 
 ---
 
-### 7.3 Guardar / Asociar Tarjeta Tokenizada (`POST /transacciones/tarjetas/guardar`)
-Registra manualmente un token `bindingId` retornado por Credibanco en la billetera del usuario.
+### 7.3 Tokenizar Tarjeta Directamente con Credibanco (`POST /transacciones/tarjetas/tokenizar`)
+Valida la tarjeta (algoritmo Luhn, fecha no vencida, titular con formato `NOMBRE APELLIDO`) y ejecuta el flujo oficial de verificación en pasarela Credibanco (`register.do` con `features=VERIFY` e importe 0 + `paymentorder.do` con `tii=U` Card-on-File + `getOrderStatusExtended.do`). Si es aprobada, Credibanco emite el `bindingId` legítimo y se almacena únicamente con los datos enmascarados retornados por Credibanco (cumpliendo PCI-DSS).
 
 - **Método:** `POST`
-- **URL Gateway:** `http://localhost:8000/api/v1/payment/transacciones/tarjetas/guardar`
+- **URL Gateway:** `http://localhost:8000/api/v1/payment/transacciones/tarjetas/tokenizar`
 
 #### Request Body
 ```json
 {
-  "bindingId": "a1b2c3d4-5678-90ab-cdef-1234567890ab",
-  "tarjetaEnmascarada": "411111******1111",
-  "franquicia": "VISA",
-  "expiracion": "12/28",
-  "titular": "CARLOS GOMEZ",
+  "pan": "4111111111111111",
+  "cvc": "123",
+  "mesVencimiento": "12",
+  "anioVencimiento": "2028",
+  "nombreTitular": "CARLOS GOMEZ",
+  "email": "carlos.gomez@beathub.com",
   "esPredeterminada": true
 }
 ```
 
 #### cURL
 ```bash
-curl -X POST "http://localhost:8000/api/v1/payment/transacciones/tarjetas/guardar" \
+curl -X POST "http://localhost:8000/api/v1/payment/transacciones/tarjetas/tokenizar" \
   -H "Authorization: Bearer <TOKEN_JWT>" \
   -H "X-Arena-Id: 1" \
   -H "Content-Type: application/json" \
   -d '{
-    "bindingId": "a1b2c3d4-5678-90ab-cdef-1234567890ab",
-    "tarjetaEnmascarada": "411111******1111",
-    "franquicia": "VISA",
-    "expiracion": "12/28",
-    "titular": "CARLOS GOMEZ",
+    "pan": "4111111111111111",
+    "cvc": "123",
+    "mesVencimiento": "12",
+    "anioVencimiento": "2028",
+    "nombreTitular": "CARLOS GOMEZ",
+    "email": "carlos.gomez@beathub.com",
+    "esPredeterminada": true
+  }'
+```
+
+---
+
+### 7.4 Iniciar Tokenización con Formulario Seguro de Credibanco (`POST /transacciones/tarjetas/iniciar-tokenizacion`)
+Registra una orden de verificación con `amount=0` y `features=VERIFY` en Credibanco. Devuelve `formUrl` (formulario seguro hosteado por Credibanco) y el `credibancoOrderId` para que el tarjetahabiente ingrese la tarjeta sin exponer datos al comercio.
+
+- **Método:** `POST`
+- **URL Gateway:** `http://localhost:8000/api/v1/payment/transacciones/tarjetas/iniciar-tokenizacion`
+
+#### Request Body
+```json
+{
+  "returnUrl": "http://localhost:3000/perfil/tarjetas?status=success",
+  "failUrl": "http://localhost:3000/perfil/tarjetas?status=failed",
+  "descripcion": "Verificación de tarjeta para billetera digital",
+  "esPredeterminada": true
+}
+```
+
+#### cURL
+```bash
+curl -X POST "http://localhost:8000/api/v1/payment/transacciones/tarjetas/iniciar-tokenizacion" \
+  -H "Authorization: Bearer <TOKEN_JWT>" \
+  -H "X-Arena-Id: 1" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "returnUrl": "http://localhost:3000/perfil/tarjetas?status=success",
+    "failUrl": "http://localhost:3000/perfil/tarjetas?status=failed",
+    "descripcion": "Verificación de tarjeta para billetera digital",
+    "esPredeterminada": true
+  }'
+```
+
+---
+
+### 7.5 Confirmar Tokenización desde Credibanco (`POST /transacciones/tarjetas/confirmar-tokenizacion`)
+Consulta el estado final extendido ante Credibanco (`getOrderStatusExtended.do`) utilizando el `credibancoOrderId` generado durante la verificación. Extrae el `bindingId` legítimo emitido por Credibanco y guarda la tarjeta tokenizada en el perfil del cliente.
+
+- **Método:** `POST`
+- **URL Gateway:** `http://localhost:8000/api/v1/payment/transacciones/tarjetas/confirmar-tokenizacion`
+
+#### Request Body
+```json
+{
+  "credibancoOrderId": "05fcbc62-7ee6-4f1a-b3d5-6ca41a982283",
+  "esPredeterminada": true
+}
+```
+
+#### cURL
+```bash
+curl -X POST "http://localhost:8000/api/v1/payment/transacciones/tarjetas/confirmar-tokenizacion" \
+  -H "Authorization: Bearer <TOKEN_JWT>" \
+  -H "X-Arena-Id: 1" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "credibancoOrderId": "05fcbc62-7ee6-4f1a-b3d5-6ca41a982283",
     "esPredeterminada": true
   }'
 ```

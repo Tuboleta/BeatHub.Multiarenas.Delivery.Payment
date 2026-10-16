@@ -19,4 +19,5 @@ public class CredibancoProperties {
     private String publicWebhookUrl;
     private Boolean mccTravelAgency = false;
     private String proxyBaseUrl = "https://ecouat.credibanco.com/proxy/rest";
+    private Boolean autoPaymentEnabled = false;
 }

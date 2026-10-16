@@ -41,11 +41,48 @@ public class CredibancoRestClient {
             String arenaId,
             Long usuarioId
     ) {
+        return registerOrder(orderNumber, amount, returnUrl, failUrl, description, jsonParams, clientId, null, null, arenaId, usuarioId);
+    }
+
+    /**
+     * 9.2.1 Solicitud de registro del pedido (register.do) con soporte para features
+     */
+    public CredibancoRegisterResponse registerOrder(
+            String orderNumber,
+            BigDecimal amount,
+            String returnUrl,
+            String failUrl,
+            String description,
+            String jsonParams,
+            String clientId,
+            String features,
+            String arenaId,
+            Long usuarioId
+    ) {
+        return registerOrder(orderNumber, amount, returnUrl, failUrl, description, jsonParams, clientId, null, features, arenaId, usuarioId);
+    }
+
+    /**
+     * 9.2.1 Solicitud de registro del pedido (register.do) con soporte para bindingId y features
+     */
+    public CredibancoRegisterResponse registerOrder(
+            String orderNumber,
+            BigDecimal amount,
+            String returnUrl,
+            String failUrl,
+            String description,
+            String jsonParams,
+            String clientId,
+            String bindingId,
+            String features,
+            String arenaId,
+            Long usuarioId
+    ) {
         String targetUrl = properties.getBaseUrl() + "/register.do";
         LocalDateTime startTime = LocalDateTime.now();
 
-        // Convertir monto a unidades mínimas (ej: COP 10,000 -> 1000000)
-        long minUnitsAmount = amount.multiply(BigDecimal.valueOf(100)).longValue();
+        // Convertir monto a unidades mínimas (ej: COP 10,000 -> 1000000, o 0 para VERIFY)
+        long minUnitsAmount = amount != null ? amount.multiply(BigDecimal.valueOf(100)).longValue() : 0L;
 
         MultiValueMap<String, String> params = new LinkedMultiValueMap<>();
         params.add("userName", properties.getUsername());
@@ -68,6 +105,17 @@ public class CredibancoRestClient {
         if (clientId != null) {
             params.add("clientId", clientId);
         }
+        if (bindingId != null && !bindingId.isBlank()) {
+            params.add("bindingId", bindingId);
+        }
+        if (features != null && !features.isBlank()) {
+            for (String f : features.split(",")) {
+                String trimmed = f.trim();
+                if (!trimmed.isEmpty()) {
+                    params.add("features", trimmed);
+                }
+            }
+        }
         if (properties.getSessionTimeoutSecs() != null) {
             params.add("sessionTimeoutSecs", String.valueOf(properties.getSessionTimeoutSecs()));
         }
@@ -78,32 +126,43 @@ public class CredibancoRestClient {
         String responseStr = "";
 
         try {
-            responseStr = restClientBuilder.build()
-                    .post()
-                    .uri(targetUrl)
-                    .contentType(MediaType.APPLICATION_FORM_URLENCODED)
-                    .accept(MediaType.APPLICATION_JSON, MediaType.TEXT_PLAIN)
-                    .body(params)
-                    .retrieve()
-                    .body(String.class);
+            int maxAttempts = 2;
+            for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+                try {
+                    responseStr = restClientBuilder.build()
+                            .post()
+                            .uri(targetUrl)
+                            .contentType(MediaType.APPLICATION_FORM_URLENCODED)
+                            .accept(MediaType.APPLICATION_JSON, MediaType.TEXT_PLAIN)
+                            .body(params)
+                            .retrieve()
+                            .body(String.class);
 
-            log.info("Credibanco registerOrder raw response: {}", responseStr);
-            if (responseStr != null && !responseStr.isBlank()) {
-                response = objectMapper.readValue(responseStr, CredibancoRegisterResponse.class);
+                    log.info("Credibanco registerOrder raw response: {}", responseStr);
+                    if (responseStr != null && !responseStr.isBlank()) {
+                        response = objectMapper.readValue(responseStr, CredibancoRegisterResponse.class);
+                    }
+                    return response;
+                } catch (HttpStatusCodeException ex) {
+                    httpStatus = ex.getStatusCode().value();
+                    responseStr = ex.getResponseBodyAsString();
+                    if ((httpStatus == 502 || httpStatus == 503 || httpStatus == 504) && attempt < maxAttempts) {
+                        log.warn("Credibanco registerOrder falló con HTTP {} (posible microcorte CloudFront/UAT). Reintentando en 600ms (intento {}/{})", httpStatus, attempt, maxAttempts);
+                        try { Thread.sleep(600); } catch (InterruptedException ignored) {}
+                        continue;
+                    }
+                    log.error("Error HTTP ({}) al registrar pedido en Credibanco: {}", httpStatus, responseStr);
+                    throw new CredibancoApiException(String.valueOf(httpStatus), "Error de comunicación con Credibanco: " + responseStr, ex);
+                } catch (Exception ex) {
+                    httpStatus = 500;
+                    if (responseStr == null || responseStr.isBlank()) {
+                        responseStr = "Exception: " + ex.getMessage();
+                    }
+                    log.error("Error al registrar pedido en Credibanco. Respuesta: '{}'. Error: {}", responseStr, ex.getMessage());
+                    throw new CredibancoApiException("GATEWAY_ERROR", "Error al procesar registro en pasarela Credibanco: " + ex.getMessage(), ex);
+                }
             }
             return response;
-        } catch (HttpStatusCodeException ex) {
-            httpStatus = ex.getStatusCode().value();
-            responseStr = ex.getResponseBodyAsString();
-            log.error("Error HTTP ({}) al registrar pedido en Credibanco: {}", httpStatus, responseStr);
-            throw new CredibancoApiException(String.valueOf(httpStatus), "Error de comunicación con Credibanco: " + responseStr, ex);
-        } catch (Exception ex) {
-            httpStatus = 500;
-            if (responseStr == null || responseStr.isBlank()) {
-                responseStr = "Exception: " + ex.getMessage();
-            }
-            log.error("Error al registrar pedido en Credibanco. Respuesta: '{}'. Error: {}", responseStr, ex.getMessage());
-            throw new CredibancoApiException("GATEWAY_ERROR", "Error al procesar registro en pasarela Credibanco: " + ex.getMessage(), ex);
         } finally {
             auditService.logExternalCall(
                     arenaId,
@@ -313,6 +372,107 @@ public class CredibancoRestClient {
     }
 
     /**
+     * 9.2.5 Solicitud de pago y tokenización de tarjeta del lado del comercio (paymentorder.do)
+     */
+    public CredibancoPaymentOrderResponse paymentOrder(
+            String mdOrder,
+            String pan,
+            String cvc,
+            String year,
+            String month,
+            String cardholderName,
+            String tii,
+            String email,
+            String ip,
+            String arenaId,
+            Long usuarioId
+    ) {
+        String targetUrl = properties.getBaseUrl() + "/paymentorder.do";
+        LocalDateTime startTime = LocalDateTime.now();
+
+        MultiValueMap<String, String> params = new LinkedMultiValueMap<>();
+        params.add("userName", properties.getUsername());
+        params.add("password", properties.getPassword());
+        // Parámetros compatibles con documentación Credibanco secciones 9.2.5 y 9.2.6
+        params.add("MDORDER", mdOrder);
+        params.add("orderId", mdOrder);
+        params.add("$PAN", pan);
+        params.add("pan", pan);
+        params.add("$CVC", cvc);
+        params.add("cvc", cvc);
+        params.add("YYYY", year);
+        params.add("year", year);
+        params.add("MM", month);
+        params.add("month", month);
+        params.add("TEXT", cardholderName);
+        params.add("cardholderName", cardholderName);
+        params.add("language", "es");
+        if (tii != null && !tii.isBlank()) {
+            params.add("tii", tii); // "U" para Card on File / Tokenización inicial
+        }
+        if (email != null && !email.isBlank()) {
+            params.add("email", email);
+        }
+        if (ip != null && !ip.isBlank()) {
+            params.add("ip", ip);
+        }
+
+        java.util.Map<String, Object> maskedMap = new java.util.LinkedHashMap<>();
+        maskedMap.put("MDORDER", mdOrder);
+        maskedMap.put("pan", "pan=***" + (pan != null && pan.length() > 4 ? pan.substring(pan.length() - 4) : ""));
+        maskedMap.put("cvc", "******");
+        maskedMap.put("year", year);
+        maskedMap.put("month", month);
+        maskedMap.put("tii", tii);
+        String requestStr = formatRequestLog("POST", targetUrl, maskedMap);
+
+        CredibancoPaymentOrderResponse response = null;
+        Integer httpStatus = 200;
+        String responseStr = "";
+
+        try {
+            responseStr = restClientBuilder.build()
+                    .post()
+                    .uri(targetUrl)
+                    .contentType(MediaType.APPLICATION_FORM_URLENCODED)
+                    .accept(MediaType.APPLICATION_JSON, MediaType.TEXT_PLAIN)
+                    .body(params)
+                    .retrieve()
+                    .body(String.class);
+
+            log.info("Credibanco paymentOrder raw response: {}", responseStr);
+            if (responseStr != null && !responseStr.isBlank()) {
+                response = objectMapper.readValue(responseStr, CredibancoPaymentOrderResponse.class);
+            }
+            return response;
+        } catch (HttpStatusCodeException ex) {
+            httpStatus = ex.getStatusCode().value();
+            responseStr = ex.getResponseBodyAsString();
+            log.error("Error HTTP ({}) al ejecutar paymentOrder en Credibanco: {}", httpStatus, responseStr);
+            throw new CredibancoApiException(String.valueOf(httpStatus), "Error de comunicación con Credibanco: " + responseStr, ex);
+        } catch (Exception ex) {
+            httpStatus = 500;
+            if (responseStr == null || responseStr.isBlank()) {
+                responseStr = "Exception: " + ex.getMessage();
+            }
+            log.error("Error al ejecutar paymentOrder en Credibanco: {}", ex.getMessage());
+            throw new CredibancoApiException("GATEWAY_ERROR", "Error al procesar pago/tokenización en Credibanco: " + ex.getMessage(), ex);
+        } finally {
+            auditService.logExternalCall(
+                    arenaId,
+                    usuarioId,
+                    "CREDIBANCO_PAYMENT_ORDER",
+                    requestStr,
+                    responseStr,
+                    startTime,
+                    LocalDateTime.now(),
+                    httpStatus,
+                    (response != null && response.isSuccessful()) ? "SUCCESS" : "FAILED"
+            );
+        }
+    }
+
+    /**
      * 9.2.9 Solicitud de pago con tarjeta tokenizada (paymentOrderBinding.do)
      */
     public CredibancoPaymentOrderResponse paymentOrderBinding(
@@ -354,32 +514,43 @@ public class CredibancoRestClient {
         String responseStr = "";
 
         try {
-            responseStr = restClientBuilder.build()
-                    .post()
-                    .uri(targetUrl)
-                    .contentType(MediaType.APPLICATION_FORM_URLENCODED)
-                    .accept(MediaType.APPLICATION_JSON, MediaType.TEXT_PLAIN)
-                    .body(params)
-                    .retrieve()
-                    .body(String.class);
+            int maxAttempts = 2;
+            for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+                try {
+                    responseStr = restClientBuilder.build()
+                            .post()
+                            .uri(targetUrl)
+                            .contentType(MediaType.APPLICATION_FORM_URLENCODED)
+                            .accept(MediaType.APPLICATION_JSON, MediaType.TEXT_PLAIN)
+                            .body(params)
+                            .retrieve()
+                            .body(String.class);
 
-            log.info("Credibanco paymentOrderBinding raw response: {}", responseStr);
-            if (responseStr != null && !responseStr.isBlank()) {
-                response = objectMapper.readValue(responseStr, CredibancoPaymentOrderResponse.class);
+                    log.info("Credibanco paymentOrderBinding raw response: {}", responseStr);
+                    if (responseStr != null && !responseStr.isBlank()) {
+                        response = objectMapper.readValue(responseStr, CredibancoPaymentOrderResponse.class);
+                    }
+                    return response;
+                } catch (HttpStatusCodeException ex) {
+                    httpStatus = ex.getStatusCode().value();
+                    responseStr = ex.getResponseBodyAsString();
+                    if ((httpStatus == 502 || httpStatus == 503 || httpStatus == 504) && attempt < maxAttempts) {
+                        log.warn("Credibanco paymentOrderBinding falló con HTTP {} (posible microcorte CloudFront/UAT). Reintentando en 600ms (intento {}/{})", httpStatus, attempt, maxAttempts);
+                        try { Thread.sleep(600); } catch (InterruptedException ignored) {}
+                        continue;
+                    }
+                    log.error("Error HTTP ({}) al ejecutar pago con token en Credibanco: {}", httpStatus, responseStr);
+                    throw new CredibancoApiException(String.valueOf(httpStatus), "Error de comunicación con Credibanco: " + responseStr, ex);
+                } catch (Exception ex) {
+                    httpStatus = 500;
+                    if (responseStr == null || responseStr.isBlank()) {
+                        responseStr = "Exception: " + ex.getMessage();
+                    }
+                    log.error("Error al ejecutar pago con token en Credibanco: {}", ex.getMessage());
+                    throw new CredibancoApiException("GATEWAY_ERROR", "Error al procesar pago tokenizado en Credibanco: " + ex.getMessage(), ex);
+                }
             }
             return response;
-        } catch (HttpStatusCodeException ex) {
-            httpStatus = ex.getStatusCode().value();
-            responseStr = ex.getResponseBodyAsString();
-            log.error("Error HTTP ({}) al ejecutar pago con token en Credibanco: {}", httpStatus, responseStr);
-            throw new CredibancoApiException(String.valueOf(httpStatus), "Error de comunicación con Credibanco: " + responseStr, ex);
-        } catch (Exception ex) {
-            httpStatus = 500;
-            if (responseStr == null || responseStr.isBlank()) {
-                responseStr = "Exception: " + ex.getMessage();
-            }
-            log.error("Error al ejecutar pago con token en Credibanco: {}", ex.getMessage());
-            throw new CredibancoApiException("GATEWAY_ERROR", "Error al procesar pago tokenizado en Credibanco: " + ex.getMessage(), ex);
         } finally {
             auditService.logExternalCall(
                     arenaId,

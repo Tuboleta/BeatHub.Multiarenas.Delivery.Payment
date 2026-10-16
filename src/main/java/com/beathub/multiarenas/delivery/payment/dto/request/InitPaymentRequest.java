@@ -25,6 +25,12 @@ public class InitPaymentRequest {
     private String failUrl;
     private String description;
 
+    // Bandera para tokenizar y guardar la tarjeta para futuras compras (1-Click) tras la aprobación
+    private Boolean guardarTarjeta = false;
+
+    // Token de enlace (bindingId) si el cliente paga con una tarjeta guardada
+    private String bindingId;
+
     // Datos antifraude / jsonParams
     private Map<String, Object> extraParams;
 }

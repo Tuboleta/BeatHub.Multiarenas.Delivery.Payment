@@ -63,7 +63,7 @@ public final class SecurityUtils {
     }
 
     public static boolean hasArenaAccess(Long arenaId) {
-        if (hasRole("ROLE_SUPER_ADMIN")) {
+        if (hasRole("ROLE_SUPER_ADMIN") || hasRole("ROLE_BACKOFFICE")) {
             return true;
         }
         return getCurrentUserArenas().contains(arenaId);

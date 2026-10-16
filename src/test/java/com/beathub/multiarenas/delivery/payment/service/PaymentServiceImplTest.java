@@ -16,6 +16,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import java.util.Map;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -144,11 +145,13 @@ class PaymentServiceImplTest {
     }
 
     @Test
-    @DisplayName("Pago con token / One-Click exitoso: debita tarjeta guardada y aprueba pedido")
+    @DisplayName("Pago con token / One-Click exitoso: debita tarjeta guardada vía paymentOrderBinding y aprueba pedido")
     void payWithToken_Exitoso() {
         com.beathub.multiarenas.delivery.payment.client.dto.CredibancoRegisterResponse regResp =
                 new com.beathub.multiarenas.delivery.payment.client.dto.CredibancoRegisterResponse();
         regResp.setOrderId("CRED-ORDER-TOKEN-123");
+        regResp.setFormUrl("https://ecouat.credibanco.com/payment/merchants/test/payment_es.html?mdOrder=CRED-ORDER-TOKEN-123");
+        regResp.setErrorCode("0");
 
         com.beathub.multiarenas.delivery.payment.client.dto.CredibancoPaymentOrderResponse payResp =
                 new com.beathub.multiarenas.delivery.payment.client.dto.CredibancoPaymentOrderResponse();
@@ -159,10 +162,13 @@ class PaymentServiceImplTest {
         when(medioPagoRepository.findById(anyInt())).thenReturn(Optional.of(new MedioPago(1, "Tarjetas", 1, LocalDateTime.now(), 1L)));
         when(pedidoPagoRepository.save(any(PedidoPago.class))).thenAnswer(i -> i.getArgument(0));
 
-        when(credibancoClient.registerOrder(any(), any(), any(), any(), any(), any(), any(), any(), any()))
-                .thenReturn(regResp);
-        when(credibancoClient.paymentOrderBinding(eq("CRED-ORDER-TOKEN-123"), eq("BIND-XYZ-999"), eq("123"), any(), eq("1"), eq(5L)))
-                .thenReturn(payResp);
+        when(credibancoClient.registerOrder(
+                any(), any(), any(), any(), any(), any(), eq("ARENA_1_USR_5"), isNull(), eq("AUTO_PAYMENT"), eq("1"), eq(5L)
+        )).thenReturn(regResp);
+
+        when(credibancoClient.paymentOrderBinding(
+                eq("CRED-ORDER-TOKEN-123"), eq("BIND-XYZ-999"), eq("123"), eq("127.0.0.1"), eq("1"), eq(5L)
+        )).thenReturn(payResp);
 
         com.beathub.multiarenas.delivery.payment.dto.request.PayWithTokenRequest request =
                 com.beathub.multiarenas.delivery.payment.dto.request.PayWithTokenRequest.builder()
@@ -182,7 +188,7 @@ class PaymentServiceImplTest {
         assertEquals("APROBADO", response.getEstadoNombre());
         assertEquals("AUTH-TOKEN-789", response.getAuthCode());
         assertFalse(response.isRequiere3ds());
-        verify(orderingClient).updateOrderStatus(eq(99L), eq(2), any(), any());
+        verify(orderingClient).updateOrderStatus(eq(99L), eq(2), any(), any(), any(), any(), any());
     }
 
     @Test
@@ -221,5 +227,212 @@ class PaymentServiceImplTest {
         assertEquals("411111******1111", tarjetas.get(0).getTarjetaEnmascarada());
         assertEquals("VISA", tarjetas.get(0).getFranquicia());
         assertTrue(tarjetas.get(0).getEsPredeterminada());
+    }
+
+    @Test
+    @DisplayName("Tokenizar tarjeta directa exitoso: valida tarjeta, envía VERIFY a Credibanco y persiste token legítimo")
+    void tokenizeCard_Exitoso() {
+        com.beathub.multiarenas.delivery.payment.client.dto.CredibancoRegisterResponse regResp =
+                new com.beathub.multiarenas.delivery.payment.client.dto.CredibancoRegisterResponse();
+        regResp.setOrderId("CRED-VERIFY-123");
+
+        com.beathub.multiarenas.delivery.payment.client.dto.CredibancoPaymentOrderResponse payResp =
+                new com.beathub.multiarenas.delivery.payment.client.dto.CredibancoPaymentOrderResponse();
+        payResp.setErrorCode("0");
+
+        com.beathub.multiarenas.delivery.payment.client.dto.CredibancoStatusResponse statusResp =
+                new com.beathub.multiarenas.delivery.payment.client.dto.CredibancoStatusResponse();
+        statusResp.setOrderStatus(4); // 4 = Reversado tras VERIFY según manual Credibanco
+        statusResp.setActionCode("0");
+        statusResp.setBindingId("BIND-LEGIT-CRED-999");
+        statusResp.setCardAuthInfo(java.util.Map.of(
+                "maskedPan", "411111******1111",
+                "paymentSystem", "VISA",
+                "cardholderName", "CARLOS GOMEZ"
+        ));
+
+        when(credibancoProperties.getDefaultReturnUrl()).thenReturn("http://localhost:3000/return");
+        when(credibancoProperties.getDefaultFailUrl()).thenReturn("http://localhost:3000/fail");
+
+        when(credibancoClient.registerOrder(any(), eq(BigDecimal.ZERO), any(), any(), any(), isNull(), eq("ARENA_1_USR_5"), eq("VERIFY"), eq("1"), eq(5L)))
+                .thenReturn(regResp);
+
+        when(credibancoClient.paymentOrder(eq("CRED-VERIFY-123"), eq("4111111111111111"), eq("123"), eq("2028"), eq("12"), eq("CARLOS GOMEZ"), eq("U"), any(), any(), eq("1"), eq(5L)))
+                .thenReturn(payResp);
+
+        when(credibancoClient.getOrderStatusExtended(eq("CRED-VERIFY-123"), any(), eq("1"), eq(5L)))
+                .thenReturn(statusResp);
+
+        when(clientePagoRepository.findByClienteReferencia(any()))
+                .thenReturn(Optional.empty());
+        when(clientePagoRepository.save(any(ClientePago.class))).thenAnswer(i -> {
+            ClientePago cp = i.getArgument(0);
+            cp.setId(50L);
+            return cp;
+        });
+
+        when(tarjetaClientePagoRepository.save(any(TarjetaClientePago.class))).thenAnswer(i -> {
+            TarjetaClientePago tcp = i.getArgument(0);
+            tcp.setId(101L);
+            return tcp;
+        });
+
+        com.beathub.multiarenas.delivery.payment.dto.request.TokenizarTarjetaRequest request =
+                com.beathub.multiarenas.delivery.payment.dto.request.TokenizarTarjetaRequest.builder()
+                        .pan("4111111111111111")
+                        .cvc("123")
+                        .mesVencimiento("12")
+                        .anioVencimiento("2028")
+                        .nombreTitular("Carlos Gomez")
+                        .esPredeterminada(true)
+                        .build();
+
+        var response = paymentService.tokenizeCard(request, "1", 5L, "127.0.0.1");
+
+        assertNotNull(response);
+        assertEquals("BIND-LEGIT-CRED-999", response.getBindingId());
+        assertEquals("411111******1111", response.getTarjetaEnmascarada());
+        assertEquals("VISA", response.getFranquicia());
+        assertEquals("CARLOS GOMEZ", response.getTitular());
+        assertTrue(response.getEsPredeterminada());
+    }
+
+    @Test
+    @DisplayName("Tokenizar tarjeta con PAN inválido (Luhn): lanza BadRequestException")
+    void tokenizeCard_LuhnInvalido_LanzaBadRequestException() {
+        com.beathub.multiarenas.delivery.payment.dto.request.TokenizarTarjetaRequest request =
+                com.beathub.multiarenas.delivery.payment.dto.request.TokenizarTarjetaRequest.builder()
+                        .pan("4111111111111119") // PAN con dígito de verificación inválido
+                        .cvc("123")
+                        .mesVencimiento("12")
+                        .anioVencimiento("2028")
+                        .nombreTitular("Carlos Gomez")
+                        .build();
+
+        assertThrows(com.beathub.multiarenas.delivery.payment.exception.BadRequestException.class, () ->
+                paymentService.tokenizeCard(request, "1", 5L, "127.0.0.1"));
+    }
+
+    @Test
+    @DisplayName("Tokenizar tarjeta con titular sin apellido: lanza BadRequestException")
+    void tokenizeCard_TitularSinApellido_LanzaBadRequestException() {
+        com.beathub.multiarenas.delivery.payment.dto.request.TokenizarTarjetaRequest request =
+                com.beathub.multiarenas.delivery.payment.dto.request.TokenizarTarjetaRequest.builder()
+                        .pan("4111111111111111")
+                        .cvc("123")
+                        .mesVencimiento("12")
+                        .anioVencimiento("2028")
+                        .nombreTitular("Carlos") // Falta apellido
+                        .build();
+
+        assertThrows(com.beathub.multiarenas.delivery.payment.exception.BadRequestException.class, () ->
+                paymentService.tokenizeCard(request, "1", 5L, "127.0.0.1"));
+    }
+
+    @Test
+    @DisplayName("initiatePayment con guardarTarjeta=true: envía clientId y no fuerza AUTO_PAYMENT por defecto (evita error 13)")
+    void initiatePayment_ConGuardarTarjeta_EnviaClientIdSinAutoPaymentPorDefecto() {
+        com.beathub.multiarenas.delivery.payment.client.dto.CredibancoRegisterResponse regResp =
+                new com.beathub.multiarenas.delivery.payment.client.dto.CredibancoRegisterResponse();
+        regResp.setOrderId("CRED-INIT-123");
+        regResp.setFormUrl("https://ecouat.credibanco.com/payment/form?mdOrder=CRED-INIT-123");
+
+        when(tipoPagoRepository.findById(anyInt())).thenReturn(Optional.of(new TipoPago(1, "Pago Único", "Desc", 1, LocalDateTime.now(), 1L)));
+        when(pedidoPagoRepository.save(any(PedidoPago.class))).thenAnswer(i -> {
+            PedidoPago pp = i.getArgument(0);
+            pp.setId(1001L);
+            return pp;
+        });
+
+        when(credibancoClient.registerOrder(
+                anyString(),
+                eq(new BigDecimal("18600.00")),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString(),
+                eq("ARENA_1_USR_5"),
+                isNull(),
+                isNull(),
+                eq("1"),
+                eq(5L)
+        )).thenReturn(regResp);
+
+        com.beathub.multiarenas.delivery.payment.dto.request.InitPaymentRequest req = new com.beathub.multiarenas.delivery.payment.dto.request.InitPaymentRequest();
+        req.setPedidoId(44L);
+        req.setMonto(new BigDecimal("18600.00"));
+        req.setGuardarTarjeta(true);
+
+        var resp = paymentService.initiatePayment(req, "1", 5L);
+
+        assertNotNull(resp);
+        assertEquals("CRED-INIT-123", resp.getCredibancoOrderId());
+        verify(credibancoClient).registerOrder(
+                anyString(),
+                eq(new BigDecimal("18600.00")),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString(),
+                eq("ARENA_1_USR_5"),
+                isNull(),
+                isNull(),
+                eq("1"),
+                eq(5L)
+        );
+    }
+
+    @Test
+    @DisplayName("initiatePayment con features explícito en extraParams: envía el feature solicitado")
+    void initiatePayment_ConFeaturesExplicito_EnviaFeatures() {
+        com.beathub.multiarenas.delivery.payment.client.dto.CredibancoRegisterResponse regResp =
+                new com.beathub.multiarenas.delivery.payment.client.dto.CredibancoRegisterResponse();
+        regResp.setOrderId("CRED-INIT-123");
+        regResp.setFormUrl("https://ecouat.credibanco.com/payment/form?mdOrder=CRED-INIT-123");
+
+        when(tipoPagoRepository.findById(anyInt())).thenReturn(Optional.of(new TipoPago(1, "Pago Único", "Desc", 1, LocalDateTime.now(), 1L)));
+        when(pedidoPagoRepository.save(any(PedidoPago.class))).thenAnswer(i -> {
+            PedidoPago pp = i.getArgument(0);
+            pp.setId(1001L);
+            return pp;
+        });
+
+        when(credibancoClient.registerOrder(
+                anyString(),
+                eq(new BigDecimal("18600.00")),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString(),
+                eq("ARENA_1_USR_5"),
+                isNull(),
+                eq("AUTO_PAYMENT"),
+                eq("1"),
+                eq(5L)
+        )).thenReturn(regResp);
+
+        com.beathub.multiarenas.delivery.payment.dto.request.InitPaymentRequest req = new com.beathub.multiarenas.delivery.payment.dto.request.InitPaymentRequest();
+        req.setPedidoId(44L);
+        req.setMonto(new BigDecimal("18600.00"));
+        req.setGuardarTarjeta(true);
+        req.setExtraParams(Map.of("features", "AUTO_PAYMENT"));
+
+        var resp = paymentService.initiatePayment(req, "1", 5L);
+
+        assertNotNull(resp);
+        assertEquals("CRED-INIT-123", resp.getCredibancoOrderId());
+        verify(credibancoClient).registerOrder(
+                anyString(),
+                eq(new BigDecimal("18600.00")),
+                anyString(),
+                anyString(),
+                anyString(),
+                anyString(),
+                eq("ARENA_1_USR_5"),
+                isNull(),
+                eq("AUTO_PAYMENT"),
+                eq("1"),
+                eq(5L)
+        );
     }
 }

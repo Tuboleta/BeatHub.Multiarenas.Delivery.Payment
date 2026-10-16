@@ -1,6 +1,7 @@
 package com.beathub.multiarenas.delivery.payment.service.impl;
 
 import com.beathub.multiarenas.delivery.payment.client.CredibancoRestClient;
+import com.beathub.multiarenas.delivery.payment.client.NotificationServiceClient;
 import com.beathub.multiarenas.delivery.payment.client.OrderingServiceClient;
 import com.beathub.multiarenas.delivery.payment.client.dto.*;
 import com.beathub.multiarenas.delivery.payment.config.CredibancoProperties;
@@ -42,6 +43,7 @@ public class PaymentServiceImpl implements PaymentService {
     private final TarjetaClientePagoRepository tarjetaClientePagoRepository;
     private final CredibancoRestClient credibancoClient;
     private final OrderingServiceClient orderingClient;
+    private final NotificationServiceClient notificationServiceClient;
     private final CredibancoProperties credibancoProperties;
     private final HmacSignatureService hmacSignatureService;
     private final ObjectMapper objectMapper = new ObjectMapper();
@@ -419,6 +421,15 @@ public class PaymentServiceImpl implements PaymentService {
                     } else {
                         orderingClient.updateOrderStatus(pedidoPago.getPedidoId(), 2, msg, null);
                     }
+
+                    // Despachar evento asíncrono de vaca completada (Flujo 8: VACA_COMPLETE)
+                    notificationServiceClient.notificarVacaCompletada(
+                            parseArenaId(gp.getArenaId()),
+                            pedidoPago.getUsuarioId() != null ? pedidoPago.getUsuarioId() : gpu.getUsuarioId(),
+                            pedidoPago.getPedidoId(),
+                            gp.getNombre(),
+                            gp.getValorTotal()
+                    );
                 } else {
                     log.info("Aporte a la vaca registrado para pedido {}. Total recaudado: {}, Saldo pendiente: {}",
                             pedidoPago.getPedidoId(), nuevoTotalPagado, nuevoSaldo);
@@ -1310,5 +1321,14 @@ public class PaymentServiceImpl implements PaymentService {
             case 5 -> "ANULADO";
             default -> "ESTADO_" + estadoId;
         };
+    }
+
+    private Long parseArenaId(String arenaId) {
+        if (arenaId != null) {
+            try {
+                return Long.parseLong(arenaId);
+            } catch (NumberFormatException ignored) {}
+        }
+        return 1L;
     }
 }

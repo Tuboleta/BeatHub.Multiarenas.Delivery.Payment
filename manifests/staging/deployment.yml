@@ -60,6 +60,8 @@ spec:
               value: "http://beathubmultiarenasdeliveryordering.multiarenas.svc.cluster.local/api/v1/ordering"
             - name: SERVICES_AUTH_URL
               value: "http://beathubmultiarenasdeliveryauth.multiarenas.svc.cluster.local/api/v1/auth"
+            - name: SERVICES_NOTIFICATION_URL
+              value: "http://beathubmultiarenasdeliverynotification.multiarenas.svc.cluster.local/api/v1/notifications"
             - name: PWA_BASE_URL
               value: "https://delivery-daviarena-stg.beat-hub.com"
             - name: CREDIBANCO_DEFAULT_RETURN_URL

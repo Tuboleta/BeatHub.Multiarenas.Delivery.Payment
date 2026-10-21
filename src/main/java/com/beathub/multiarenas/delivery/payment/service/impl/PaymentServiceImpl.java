@@ -83,6 +83,7 @@ public class PaymentServiceImpl implements PaymentService {
         // Guardar registro inicial en base de datos
         PedidoPago pedidoPago = PedidoPago.builder()
                 .pedidoId(request.getPedidoId())
+                .grupoPedidoId(request.getGrupoPedidoId())
                 .arenaId(arenaId)
                 .usuarioId(usuarioId)
                 .tipoPago(tipoPago)
@@ -423,13 +424,15 @@ public class PaymentServiceImpl implements PaymentService {
                     }
 
                     // Despachar evento asíncrono de vaca completada (Flujo 8: VACA_COMPLETE)
-                    notificationServiceClient.notificarVacaCompletada(
-                            parseArenaId(gp.getArenaId()),
-                            pedidoPago.getUsuarioId() != null ? pedidoPago.getUsuarioId() : gpu.getUsuarioId(),
-                            pedidoPago.getPedidoId(),
-                            gp.getNombre(),
-                            gp.getValorTotal()
-                    );
+                    if (notificationServiceClient != null) {
+                        notificationServiceClient.notificarVacaCompletada(
+                                parseArenaId(gp.getArenaId()),
+                                pedidoPago.getUsuarioId() != null ? pedidoPago.getUsuarioId() : gpu.getUsuarioId(),
+                                pedidoPago.getPedidoId(),
+                                gp.getNombre(),
+                                gp.getValorTotal()
+                        );
+                    }
                 } else {
                     log.info("Aporte a la vaca registrado para pedido {}. Total recaudado: {}, Saldo pendiente: {}",
                             pedidoPago.getPedidoId(), nuevoTotalPagado, nuevoSaldo);
@@ -636,7 +639,17 @@ public class PaymentServiceImpl implements PaymentService {
         }
 
         if (payResp != null && payResp.isSuccessful()) {
-            onPaymentApproved(pedidoPago, "Pago One-Click con tarjeta tokenizada aprobado (Auth: " + payResp.getRbsOrderId() + ")", payResp.getRbsOrderId(), null);
+            // Sincronizar estado real extendido contra Credibanco (getOrderStatusExtended.do)
+            // para obtener el código de autorización real (approvalCode) y terminal (terminalId) legítimos
+            try {
+                syncAndMapPaymentStatus(pedidoPago, arenaId, usuarioId);
+            } catch (Exception ex) {
+                log.warn("No se pudo sincronizar estado extendido tras pago con token: {}", ex.getMessage());
+            }
+
+            if (!Integer.valueOf(2).equals(pedidoPago.getEstadoId())) {
+                onPaymentApproved(pedidoPago, "Pago One-Click con tarjeta tokenizada aprobado (Auth: " + payResp.getRbsOrderId() + ")", payResp.getRbsOrderId(), null);
+            }
 
             return PaymentTokenResponse.builder()
                     .pedidoPagoId(pedidoPago.getId())
@@ -647,7 +660,7 @@ public class PaymentServiceImpl implements PaymentService {
                     .estadoNombre("APROBADO")
                     .monto(pedidoPago.getMonto())
                     .moneda(pedidoPago.getMoneda())
-                    .authCode(payResp.getRbsOrderId())
+                    .authCode(pedidoPago.getAuthCode() != null ? pedidoPago.getAuthCode() : payResp.getRbsOrderId())
                     .mensaje("Pago procesado exitosamente")
                     .requiere3ds(false)
                     .build();

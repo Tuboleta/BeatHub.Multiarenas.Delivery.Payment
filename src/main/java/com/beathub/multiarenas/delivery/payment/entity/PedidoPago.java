@@ -21,6 +21,9 @@ public class PedidoPago {
     @Column(name = "pedido_id", nullable = false)
     private Long pedidoId;
 
+    @Column(name = "grupo_pedido_id", length = 100)
+    private String grupoPedidoId;
+
     @Column(name = "arena_id", length = 50)
     private String arenaId;
 

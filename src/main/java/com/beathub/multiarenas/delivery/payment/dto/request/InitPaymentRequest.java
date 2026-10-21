@@ -13,6 +13,9 @@ public class InitPaymentRequest {
     @NotNull(message = "El pedidoId es obligatorio")
     private Long pedidoId;
 
+    private String grupoPedidoId;
+    private java.util.List<Long> pedidoIds;
+
     @NotNull(message = "El monto es obligatorio")
     @DecimalMin(value = "0.01", message = "El monto debe ser mayor a 0")
     private BigDecimal monto;

@@ -57,6 +57,9 @@ class PaymentServiceImplTest {
     private CredibancoProperties credibancoProperties;
 
     @Mock
+    private com.beathub.multiarenas.delivery.payment.client.NotificationServiceClient notificationServiceClient;
+
+    @Mock
     private HmacSignatureService hmacSignatureService;
 
     @InjectMocks
@@ -170,6 +173,16 @@ class PaymentServiceImplTest {
                 eq("CRED-ORDER-TOKEN-123"), eq("BIND-XYZ-999"), eq("123"), eq("127.0.0.1"), eq("1"), eq(5L)
         )).thenReturn(payResp);
 
+        com.beathub.multiarenas.delivery.payment.client.dto.CredibancoStatusResponse statusResp =
+                new com.beathub.multiarenas.delivery.payment.client.dto.CredibancoStatusResponse();
+        statusResp.setOrderStatus(2);
+        statusResp.setAuthCode("123456");
+        statusResp.setTerminalId("00035992");
+
+        when(credibancoClient.getOrderStatusExtended(
+                eq("CRED-ORDER-TOKEN-123"), any(), eq("1"), eq(5L)
+        )).thenReturn(statusResp);
+
         com.beathub.multiarenas.delivery.payment.dto.request.PayWithTokenRequest request =
                 com.beathub.multiarenas.delivery.payment.dto.request.PayWithTokenRequest.builder()
                         .pedidoId(99L)
@@ -186,9 +199,9 @@ class PaymentServiceImplTest {
         assertNotNull(response);
         assertEquals(2, response.getEstadoId());
         assertEquals("APROBADO", response.getEstadoNombre());
-        assertEquals("AUTH-TOKEN-789", response.getAuthCode());
+        assertEquals("123456", response.getAuthCode());
         assertFalse(response.isRequiere3ds());
-        verify(orderingClient).updateOrderStatus(eq(99L), eq(2), any(), any(), any(), any(), any());
+        verify(orderingClient).updateOrderStatus(eq(99L), eq(2), any(), any(), eq("123456"), eq("00035992"), any());
     }
 
     @Test

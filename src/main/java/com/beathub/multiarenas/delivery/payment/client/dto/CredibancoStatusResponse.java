@@ -145,6 +145,9 @@ public class CredibancoStatusResponse {
         if (terminalId != null && !terminalId.isBlank()) {
             return terminalId.trim();
         }
+        if (cardAuthInfo != null && cardAuthInfo.get("terminalId") != null && !cardAuthInfo.get("terminalId").toString().isBlank()) {
+            return cardAuthInfo.get("terminalId").toString().trim();
+        }
         return null;
     }
 }

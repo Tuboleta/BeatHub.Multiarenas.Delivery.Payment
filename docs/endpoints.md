@@ -57,6 +57,7 @@ X-Arena-Id: <ID_ARENA>             # Delimita las llaves y terminal Credibanco d
 | `GET` | `/api/v1/payment/transacciones/tarjetas/mis-tarjetas` | ✅ Sí | Listar tarjetas activas tokenizadas del usuario autenticado. |
 | `DELETE`| `/api/v1/payment/transacciones/tarjetas/{tarjetaId}` | ✅ Sí | Desvincular y eliminar una tarjeta guardada (`unBindCard.do`). |
 | `PUT` | `/api/v1/payment/transacciones/tarjetas/{tarjetaId}/predeterminada` | ✅ Sí | Marcar tarjeta guardada como método de pago preferido. |
+| `PUT` | `/api/v1/payment/transacciones/tarjetas/{tarjetaId}/alias` | ✅ Sí | Actualizar nombre personalizado / alias asignado a la tarjeta. |
 | `GET` | `/api/v1/payment/transacciones/tarjetas/credibanco-bindings` | ✅ Sí | Sincronizar bindings remotos directamente desde Credibanco (`getBindings.do`). |
 
 ### Grupos de Pago Compartido (La Vaca / Split Payment)
@@ -562,7 +563,33 @@ curl -X PUT "http://localhost:8000/api/v1/payment/transacciones/tarjetas/1/prede
 
 ---
 
-### 7.6 Sincronizar Bindings Remotos desde Credibanco (`GET /transacciones/tarjetas/credibanco-bindings`)
+### 7.6 Actualizar Nombre Personalizado / Alias de Tarjeta (`PUT /transacciones/tarjetas/{tarjetaId}/alias`)
+Permite al cliente asociar un nombre o apodo amigable (ej: "Nómina Davivienda", "Tarjeta Personal", "Compras") a una tarjeta tokenizada guardada.
+
+- **Método:** `PUT`
+- **URL Gateway:** `http://localhost:8000/api/v1/payment/transacciones/tarjetas/1/alias`
+
+#### Request Body
+```json
+{
+  "alias": "Nómina Davivienda"
+}
+```
+
+#### cURL
+```bash
+curl -X PUT "http://localhost:8000/api/v1/payment/transacciones/tarjetas/1/alias" \
+  -H "Authorization: Bearer <TOKEN_JWT>" \
+  -H "X-Arena-Id: 1" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "alias": "Nómina Davivienda"
+  }'
+```
+
+---
+
+### 7.7 Sincronizar Bindings Remotos desde Credibanco (`GET /transacciones/tarjetas/credibanco-bindings`)
 Consulta directamente el servicio `getBindings.do` de Credibanco para el usuario autenticado y sincroniza las tarjetas activas.
 
 - **Método:** `GET`

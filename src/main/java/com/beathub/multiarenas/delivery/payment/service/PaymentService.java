@@ -29,5 +29,6 @@ public interface PaymentService {
     TarjetaGuardadaResponse saveCardBinding(SaveCardBindingRequest request, String arenaId, Long usuarioId);
     void deleteUserCard(Long tarjetaId, String arenaId, Long usuarioId);
     void setDefaultCard(Long tarjetaId, String arenaId, Long usuarioId);
+    TarjetaGuardadaResponse updateCardAlias(Long tarjetaId, String alias, String arenaId, Long usuarioId);
     CredibancoGetBindingsResponse syncCredibancoBindings(String arenaId, Long usuarioId);
 }

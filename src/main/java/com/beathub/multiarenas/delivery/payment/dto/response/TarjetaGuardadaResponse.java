@@ -19,6 +19,7 @@ public class TarjetaGuardadaResponse {
     private String franquicia;
     private String expiracion;
     private String titular;
+    private String alias;
     private Boolean esPredeterminada;
     private Integer estadoId;
     private LocalDateTime creacionFecha;

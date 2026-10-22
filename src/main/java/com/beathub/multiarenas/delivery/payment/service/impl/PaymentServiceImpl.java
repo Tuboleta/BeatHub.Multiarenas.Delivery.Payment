@@ -798,6 +798,7 @@ public class PaymentServiceImpl implements PaymentService {
                         .franquicia(franquicia)
                         .expiracion(expiracion)
                         .titular(titular)
+                        .alias(request.getAlias())
                         .esPredeterminada(Boolean.TRUE.equals(request.getEsPredeterminada()))
                         .build();
 
@@ -839,6 +840,7 @@ public class PaymentServiceImpl implements PaymentService {
                 .franquicia(franquicia)
                 .expiracion(expiracion)
                 .titular(titular)
+                .alias(request.getAlias())
                 .esPredeterminada(Boolean.TRUE.equals(request.getEsPredeterminada()))
                 .build();
 
@@ -1163,6 +1165,9 @@ public class PaymentServiceImpl implements PaymentService {
             if (request.getTitular() != null && !request.getTitular().isBlank()) {
                 tarjeta.setTitular(request.getTitular());
             }
+            if (request.getAlias() != null && !request.getAlias().isBlank()) {
+                tarjeta.setAlias(request.getAlias().trim());
+            }
             if (marcarPredeterminada) {
                 tarjeta.setEsPredeterminada(true);
             }
@@ -1200,6 +1205,7 @@ public class PaymentServiceImpl implements PaymentService {
                     .franquicia(request.getFranquicia() != null ? request.getFranquicia().toUpperCase() : "TARJETA")
                     .expiracion(request.getExpiracion())
                     .titular(request.getTitular())
+                    .alias(request.getAlias() != null && !request.getAlias().isBlank() ? request.getAlias().trim() : null)
                     .esPredeterminada(marcarPredeterminada)
                     .estadoId(1)
                     .creacionUsuario(usuarioId)
@@ -1273,6 +1279,21 @@ public class PaymentServiceImpl implements PaymentService {
 
     @Override
     @Transactional
+    public TarjetaGuardadaResponse updateCardAlias(Long tarjetaId, String alias, String arenaId, Long usuarioId) {
+        String safeArena = (arenaId != null && !arenaId.isBlank()) ? arenaId.trim() : "1";
+        TarjetaClientePago tarjeta = tarjetaClientePagoRepository
+                .findByIdAndClientePagoArenaIdAndClientePagoArenaUsuarioId(tarjetaId, safeArena, usuarioId)
+                .or(() -> tarjetaClientePagoRepository.findByIdAndClientePagoArenaUsuarioId(tarjetaId, usuarioId))
+                .orElseThrow(() -> new ResourceNotFoundException("Tarjeta con ID " + tarjetaId + " no encontrada para esta arena y usuario"));
+
+        tarjeta.setAlias(alias != null && !alias.isBlank() ? alias.trim() : null);
+        tarjeta = tarjetaClientePagoRepository.save(tarjeta);
+
+        return mapToTarjetaResponse(tarjeta);
+    }
+
+    @Override
+    @Transactional
     public CredibancoGetBindingsResponse syncCredibancoBindings(String arenaId, Long usuarioId) {
         try {
             CredibancoGetBindingsResponse resp = credibancoClient.getBindings(resolverClientId(arenaId, usuarioId), arenaId, usuarioId);
@@ -1318,6 +1339,7 @@ public class PaymentServiceImpl implements PaymentService {
                 .franquicia(tarjeta.getFranquicia())
                 .expiracion(tarjeta.getExpiracion())
                 .titular(tarjeta.getTitular())
+                .alias(tarjeta.getAlias())
                 .esPredeterminada(tarjeta.getEsPredeterminada())
                 .estadoId(tarjeta.getEstadoId())
                 .creacionFecha(tarjeta.getCreacionFecha())

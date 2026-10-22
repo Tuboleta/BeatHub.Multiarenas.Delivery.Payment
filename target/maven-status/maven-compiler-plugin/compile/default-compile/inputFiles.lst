@@ -21,6 +21,7 @@ C:\Users\Dev23\Documents\workspaces\ingenios\MultiArenas\BeatHub.Multiarenas.Del
 C:\Users\Dev23\Documents\workspaces\ingenios\MultiArenas\BeatHub.Multiarenas.Delivery.Payment\src\main\java\com\beathub\multiarenas\delivery\payment\controller\CredibancoWebhookController.java
 C:\Users\Dev23\Documents\workspaces\ingenios\MultiArenas\BeatHub.Multiarenas.Delivery.Payment\src\main\java\com\beathub\multiarenas\delivery\payment\controller\GrupoPagoController.java
 C:\Users\Dev23\Documents\workspaces\ingenios\MultiArenas\BeatHub.Multiarenas.Delivery.Payment\src\main\java\com\beathub\multiarenas\delivery\payment\controller\PaymentController.java
+C:\Users\Dev23\Documents\workspaces\ingenios\MultiArenas\BeatHub.Multiarenas.Delivery.Payment\src\main\java\com\beathub\multiarenas\delivery\payment\dto\request\ActualizarTarjetaAliasRequest.java
 C:\Users\Dev23\Documents\workspaces\ingenios\MultiArenas\BeatHub.Multiarenas.Delivery.Payment\src\main\java\com\beathub\multiarenas\delivery\payment\dto\request\AgregarParticipanteRequest.java
 C:\Users\Dev23\Documents\workspaces\ingenios\MultiArenas\BeatHub.Multiarenas.Delivery.Payment\src\main\java\com\beathub\multiarenas\delivery\payment\dto\request\ConfirmarTokenizacionRequest.java
 C:\Users\Dev23\Documents\workspaces\ingenios\MultiArenas\BeatHub.Multiarenas.Delivery.Payment\src\main\java\com\beathub\multiarenas\delivery\payment\dto\request\CrearGrupoPagoRequest.java

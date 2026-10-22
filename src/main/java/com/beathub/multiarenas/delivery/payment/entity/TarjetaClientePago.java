@@ -36,6 +36,9 @@ public class TarjetaClientePago {
     @Column(length = 150)
     private String titular;
 
+    @Column(length = 100)
+    private String alias;
+
     @Column(name = "es_predeterminada")
     private Boolean esPredeterminada;
 

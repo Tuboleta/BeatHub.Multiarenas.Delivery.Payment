@@ -34,6 +34,8 @@ public class TokenizarTarjetaRequest {
 
     private String email;
 
+    private String alias;
+
     @Builder.Default
     private Boolean esPredeterminada = false;
 }

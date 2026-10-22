@@ -19,6 +19,7 @@ public class SaveCardBindingRequest {
     private String franquicia;
     private String expiracion; // MM/YY o YYYYMM
     private String titular;
+    private String alias;
     @Builder.Default
     private Boolean esPredeterminada = false;
 }

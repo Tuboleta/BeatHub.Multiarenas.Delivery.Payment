@@ -216,6 +216,20 @@ public class PaymentController {
         return ResponseEntity.ok(ApiResponse.ok(null, "Tarjeta configurada como predeterminada"));
     }
 
+    @PutMapping("/tarjetas/{tarjetaId}/alias")
+    @Operation(summary = "Actualizar nombre personalizado / alias de la tarjeta", description = "Permite al cliente asignar o modificar un apodo amigable para su tarjeta guardada")
+    public ResponseEntity<ApiResponse<TarjetaGuardadaResponse>> updateCardAlias(
+            @PathVariable Long tarjetaId,
+            @Valid @RequestBody ActualizarTarjetaAliasRequest request,
+            HttpServletRequest httpRequest
+    ) {
+        String arenaId = resolveArenaId(httpRequest);
+        Long usuarioId = resolveUsuarioId(httpRequest);
+
+        TarjetaGuardadaResponse response = paymentService.updateCardAlias(tarjetaId, request.getAlias(), arenaId, usuarioId);
+        return ResponseEntity.ok(ApiResponse.ok(response, "Nombre de tarjeta actualizado exitosamente"));
+    }
+
     @GetMapping("/tarjetas/credibanco-bindings")
     @Operation(summary = "Sincronizar tarjetas desde Credibanco", description = "Consulta directamente las tarjetas vinculadas en Credibanco con getBindings.do")
     public ResponseEntity<ApiResponse<com.beathub.multiarenas.delivery.payment.client.dto.CredibancoGetBindingsResponse>> syncBindings(

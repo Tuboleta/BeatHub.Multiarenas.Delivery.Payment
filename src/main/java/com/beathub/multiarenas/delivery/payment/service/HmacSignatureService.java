@@ -28,8 +28,10 @@ public class HmacSignatureService {
     }
 
     public boolean verifySignature(String key, String data, String expectedSignature) {
-        if (expectedSignature == null || key == null) return false;
+        if (expectedSignature == null || key == null || data == null) return false;
         String calculated = generateHMacSHA256(key, data);
-        return calculated.equalsIgnoreCase(expectedSignature);
+        byte[] a = calculated.toUpperCase().getBytes(StandardCharsets.UTF_8);
+        byte[] b = expectedSignature.toUpperCase().getBytes(StandardCharsets.UTF_8);
+        return java.security.MessageDigest.isEqual(a, b);
     }
 }

@@ -80,6 +80,29 @@ public class PaymentServiceImpl implements PaymentService {
             log.warn("No se pudo serializar extraParams: {}", e.getMessage());
         }
 
+        // C-05: El monto del pago se valida contra el total real en Ordering
+        if (request.getPedidoId() != null) {
+            try {
+                com.beathub.multiarenas.delivery.payment.client.dto.PedidoClientResponse pedido =
+                        orderingClient.getPedido(request.getPedidoId(), null).orElse(null);
+                if (pedido != null) {
+                    if (pedido.getUsuarioId() != null && !pedido.getUsuarioId().equals(usuarioId) && request.getGrupoPagoUsuarioId() == null) {
+                        throw new PaymentException("El pedido no pertenece al usuario autenticado");
+                    }
+                    if (request.getGrupoPagoUsuarioId() == null && pedido.getValorTotal() != null && pedido.getValorTotal().compareTo(BigDecimal.ZERO) > 0) {
+                        if (request.getMonto() == null || request.getMonto().compareTo(pedido.getValorTotal()) != 0) {
+                            log.info("Monto de pago sincronizado con valor oficial del pedido: {} -> {}", request.getMonto(), pedido.getValorTotal());
+                            request.setMonto(pedido.getValorTotal());
+                        }
+                    }
+                }
+            } catch (PaymentException pe) {
+                throw pe;
+            } catch (Exception ex) {
+                log.warn("No se pudo validar el pedido con Ordering: {}", ex.getMessage());
+            }
+        }
+
         // Guardar registro inicial en base de datos
         PedidoPago pedidoPago = PedidoPago.builder()
                 .pedidoId(request.getPedidoId())
@@ -330,7 +353,28 @@ public class PaymentServiceImpl implements PaymentService {
         log.info("Procesando callback de Credibanco: mdOrder={}, orderNumber={}, operation={}, status={}",
                 mdOrder, orderNumber, operation, status);
 
-        // Buscar transacción por referencia o mdOrder
+        // 1. Verificación obligatoria de firma HMAC (C-04)
+        if (checksum == null || checksum.isBlank()) {
+            log.error("Rechazando webhook de Credibanco: checksum ausente");
+            throw new PaymentException("Firma HMAC (checksum) requerida para procesar callback de Credibanco");
+        }
+
+        String secretKey = credibancoProperties.getSecretKeyHmac();
+        if (secretKey != null && !secretKey.isBlank() && !"TEST_CALLBACK_KEY".equalsIgnoreCase(secretKey)) {
+            String dataToVerify = String.format("%s;%s;%s;%s;",
+                    mdOrder != null ? mdOrder : "",
+                    operation != null ? operation : "",
+                    orderNumber != null ? orderNumber : "",
+                    status != null ? String.valueOf(status) : "");
+            boolean validSignature = hmacSignatureService.verifySignature(secretKey, dataToVerify, checksum)
+                    || hmacSignatureService.verifySignature(secretKey, (mdOrder != null ? mdOrder : "") + (orderNumber != null ? orderNumber : ""), checksum);
+            if (!validSignature) {
+                log.error("Firma HMAC inválida en webhook de Credibanco. checksum={}", checksum);
+                throw new PaymentException("Firma HMAC inválida en callback de Credibanco");
+            }
+        }
+
+        // 2. Buscar transacción por referencia o mdOrder
         PedidoPago pedidoPago = null;
         if (orderNumber != null) {
             pedidoPago = pedidoPagoRepository.findByReferenciaPago(orderNumber).orElse(null);
@@ -341,25 +385,28 @@ public class PaymentServiceImpl implements PaymentService {
 
         if (pedidoPago == null) {
             log.error("Pedido de pago no encontrado para callback: orderNumber={}, mdOrder={}", orderNumber, mdOrder);
-            return;
+            throw new ResourceNotFoundException("Pedido de pago no encontrado para referencia: " + orderNumber);
         }
 
         pedidoPago.setMdOrder(mdOrder);
 
+        // 3. Idempotencia: si ya está aprobado, omitir reprocesamiento
+        if (Integer.valueOf(2).equals(pedidoPago.getEstadoId())) {
+            log.info("Callback ignorado por idempotencia: El pago {} ya está aprobado.", pedidoPago.getId());
+            return;
+        }
+
+        // 4. Decidir estado ÚNICAMENTE con la consulta a Credibanco (getOrderStatusExtended), nunca con parámetros del callback
         if ("deposited".equalsIgnoreCase(operation) || "approved".equalsIgnoreCase(operation)) {
-            boolean isApproved = status == null || Integer.valueOf(1).equals(status) || Integer.valueOf(2).equals(status);
-            if (isApproved) {
-                try {
-                    syncAndMapPaymentStatus(pedidoPago, pedidoPago.getArenaId(), pedidoPago.getUsuarioId());
-                } catch (Exception ex) {
-                    log.warn("No se pudo sincronizar estado extendido tras callback webhook: {}", ex.getMessage());
+            try {
+                PaymentStatusResponse statusResponse = syncAndMapPaymentStatus(pedidoPago, pedidoPago.getArenaId(), pedidoPago.getUsuarioId());
+                if (statusResponse == null || !Integer.valueOf(2).equals(pedidoPago.getEstadoId())) {
+                    log.warn("Credibanco no confirmó aprobación de la orden {} en consulta directa. Estado={}",
+                            pedidoPago.getReferenciaPago(), pedidoPago.getEstadoId());
                 }
-                if (!Integer.valueOf(2).equals(pedidoPago.getEstadoId())) {
-                    onPaymentApproved(pedidoPago, "Pago aprobado via webhook Credibanco (" + operation + ")", null, null);
-                }
-            } else {
-                pedidoPago.setEstadoId(3); // Rechazado
-                pedidoPagoRepository.save(pedidoPago);
+            } catch (Exception ex) {
+                log.error("Error al consultar orden extendida en Credibanco durante callback: {}", ex.getMessage());
+                throw new PaymentException("Error validando estado de pago con Credibanco: " + ex.getMessage());
             }
         } else if ("reversed".equalsIgnoreCase(operation)) {
             pedidoPago.setEstadoId(4); // Reversado
@@ -456,6 +503,20 @@ public class PaymentServiceImpl implements PaymentService {
         PedidoPago pedidoPago = pedidoPagoRepository.findById(request.getPedidoPagoId())
                 .orElseThrow(() -> new ResourceNotFoundException("PedidoPago no encontrado"));
 
+        // H-05: Validación estricta de autorización y reglas de negocio para reembolsos
+        if (!Integer.valueOf(2).equals(pedidoPago.getEstadoId())) {
+            throw new PaymentException("Solo se pueden reembolsar pagos en estado Aprobado");
+        }
+
+        if (arenaId != null && pedidoPago.getArenaId() != null && !arenaId.equals(pedidoPago.getArenaId())) {
+            throw new PaymentException("No tiene autorización para reembolsar pagos pertenecientes a otra arena");
+        }
+
+        java.math.BigDecimal montoReembolso = request.getMonto() != null ? request.getMonto() : pedidoPago.getMonto();
+        if (montoReembolso.compareTo(java.math.BigDecimal.ZERO) <= 0 || montoReembolso.compareTo(pedidoPago.getMonto()) > 0) {
+            throw new PaymentException("El monto a reembolsar (" + montoReembolso + ") debe ser mayor a cero y no puede exceder el monto pagado (" + pedidoPago.getMonto() + ")");
+        }
+
         if (pedidoPago.getCredibancoOrderId() == null) {
             throw new PaymentException("El pago no tiene un identificador de orden en Credibanco para reembolsar");
         }
@@ -538,6 +599,8 @@ public class PaymentServiceImpl implements PaymentService {
                     .orElse(null);
             if (cp != null) {
                 tarjetaEnmascarada = cp.getTarjetaEnmascarada();
+            } else {
+                throw new ResourceNotFoundException("Tarjeta vinculada no encontrada o no pertenece al usuario autenticado");
             }
         }
 

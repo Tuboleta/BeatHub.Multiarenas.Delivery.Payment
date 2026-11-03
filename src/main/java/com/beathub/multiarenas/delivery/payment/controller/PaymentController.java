@@ -10,6 +10,7 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
 @RestController
@@ -86,6 +87,7 @@ public class PaymentController {
     }
 
     @PostMapping("/reembolso")
+    @PreAuthorize("hasAnyRole('SUPER_ADMIN', 'ADMIN_ARENA')")
     @Operation(summary = "Solicitar anulación o reembolso", description = "Ejecuta solicitud refund.do ante Credibanco")
     public ResponseEntity<ApiResponse<RefundResponse>> refundPayment(
             @Valid @RequestBody RefundPaymentRequest request,

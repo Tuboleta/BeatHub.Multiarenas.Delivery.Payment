@@ -107,7 +107,11 @@ class PaymentServiceImplTest {
     @Test
     @DisplayName("Callback Credibanco con pago parcial de grupo: actualiza saldo y mantiene pedido en espera")
     void processCredibancoCallback_AporteParcial() {
-        when(pedidoPagoRepository.findByReferenciaPago("PAY-99-001")).thenReturn(Optional.of(pedidoPago));
+                when(pedidoPagoRepository.findByReferenciaPago("PAY-99-001")).thenReturn(Optional.of(pedidoPago));
+        com.beathub.multiarenas.delivery.payment.client.dto.CredibancoStatusResponse approvedStatus = new com.beathub.multiarenas.delivery.payment.client.dto.CredibancoStatusResponse();
+        approvedStatus.setOrderStatus(2);
+        approvedStatus.setActionCode("0");
+        when(credibancoClient.getOrderStatusExtended(any(), any(), any(), any())).thenReturn(approvedStatus);
 
         paymentService.processCredibancoCallback("CRED-99-001", "PAY-99-001", "deposited", 1, "sig", "alias");
 
@@ -134,7 +138,11 @@ class PaymentServiceImplTest {
         grupoPago.setTotalPagado(new BigDecimal("50000.00"));
         grupoPago.setSaldoPendiente(new BigDecimal("50000.00"));
 
-        when(pedidoPagoRepository.findByReferenciaPago("PAY-99-001")).thenReturn(Optional.of(pedidoPago));
+                when(pedidoPagoRepository.findByReferenciaPago("PAY-99-001")).thenReturn(Optional.of(pedidoPago));
+        com.beathub.multiarenas.delivery.payment.client.dto.CredibancoStatusResponse approvedStatus = new com.beathub.multiarenas.delivery.payment.client.dto.CredibancoStatusResponse();
+        approvedStatus.setOrderStatus(2);
+        approvedStatus.setActionCode("0");
+        when(credibancoClient.getOrderStatusExtended(any(), any(), any(), any())).thenReturn(approvedStatus);
 
         paymentService.processCredibancoCallback("CRED-99-001", "PAY-99-001", "deposited", 1, "sig", "alias");
 
@@ -164,6 +172,15 @@ class PaymentServiceImplTest {
         when(tipoPagoRepository.findById(anyInt())).thenReturn(Optional.of(new TipoPago(1, "Pago Único", "Descripción", 1, LocalDateTime.now(), 1L)));
         when(medioPagoRepository.findById(anyInt())).thenReturn(Optional.of(new MedioPago(1, "Tarjetas", 1, LocalDateTime.now(), 1L)));
         when(pedidoPagoRepository.save(any(PedidoPago.class))).thenAnswer(i -> i.getArgument(0));
+
+        ClientePago cpMock = ClientePago.builder()
+                .id(1L)
+                .arenaUsuarioId(5L)
+                .bindingId("BIND-XYZ-999")
+                .tarjetaEnmascarada("411111******1111")
+                .build();
+        when(clientePagoRepository.findFirstByArenaUsuarioIdAndBindingIdOrderByIdDesc(5L, "BIND-XYZ-999"))
+                .thenReturn(Optional.of(cpMock));
 
         when(credibancoClient.registerOrder(
                 any(), any(), any(), any(), any(), any(), eq("ARENA_1_USR_5"), isNull(), eq("AUTO_PAYMENT"), eq("1"), eq(5L)

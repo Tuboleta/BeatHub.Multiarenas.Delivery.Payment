@@ -22,6 +22,10 @@ public class PaymentInitResponse {
     private Integer estadoId;
     private String estadoDescripcion;
 
+    public String getCredibancoOrderId() {
+        return this.orderId;
+    }
+
     public void setCredibancoOrderId(String credibancoOrderId) {
         this.orderId = credibancoOrderId;
     }

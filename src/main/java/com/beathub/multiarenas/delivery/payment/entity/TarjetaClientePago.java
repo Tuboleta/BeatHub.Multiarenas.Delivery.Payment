@@ -24,6 +24,18 @@ public class TarjetaClientePago {
     @Column(name = "tarjeta_id", length = 100)
     private String tarjetaId;
 
+    @Column(name = "mp_card_id", length = 100)
+    private String mpCardId;
+
+    @Column(name = "mp_payment_profile_id", length = 100)
+    private String mpPaymentProfileId;
+
+    @Column(name = "payment_method_id", length = 50)
+    private String paymentMethodId;
+
+    @Column(name = "pasarela_id")
+    private Integer pasarelaId; // 1: Mercado Pago, 2: Credibanco
+
     @Column(name = "tarjeta_enmascarada", nullable = false, length = 30)
     private String tarjetaEnmascarada;
 
@@ -61,6 +73,9 @@ public class TarjetaClientePago {
         }
         if (esPredeterminada == null) {
             esPredeterminada = false;
+        }
+        if (pasarelaId == null) {
+            pasarelaId = 2; // Credibanco por defecto si no se especifica
         }
     }
 }

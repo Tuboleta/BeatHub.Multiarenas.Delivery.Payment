@@ -14,9 +14,17 @@ import java.time.LocalDateTime;
 @Slf4j
 public class IntegrationAuditService {
 
+    public static final int SERVICIO_TCPOS = 1;
+    public static final int SERVICIO_CREDIBANCO = 2;
+    public static final int SERVICIO_ADS_SSO = 3;
+    public static final int SERVICIO_MERCADOPAGO = 4;
+
+    private static final int MICROSERVICIO_PAYMENT = 4;
+
     private final LogServicioRepository logServicioRepository;
 
     public void logExternalCall(
+            Integer servicioIntegracionId,
             String arenaId,
             Long usuarioId,
             String operacion,
@@ -28,13 +36,15 @@ public class IntegrationAuditService {
             String resultado
     ) {
         try {
-            long duracionMs = Duration.between(fechaProceso, fechaRespuesta).toMillis();
+            long duracionMs = (fechaProceso != null && fechaRespuesta != null)
+                    ? Duration.between(fechaProceso, fechaRespuesta).toMillis()
+                    : 0L;
 
             LogServicio logEntity = LogServicio.builder()
                     .arenaId(arenaId)
                     .usuarioId(usuarioId)
-                    .servicioIntegracionId(2) // CREDIBANCO
-                    .microservicioId(4)       // PAYMENT
+                    .servicioIntegracionId(servicioIntegracionId != null ? servicioIntegracionId : SERVICIO_CREDIBANCO)
+                    .microservicioId(MICROSERVICIO_PAYMENT)
                     .operacion(operacion)
                     .request(request)
                     .response(response)
@@ -51,5 +61,19 @@ public class IntegrationAuditService {
         } catch (Exception ex) {
             log.error("Error guardando traza en public.log_servicios: {}", ex.getMessage());
         }
+    }
+
+    public void logExternalCall(
+            String arenaId,
+            Long usuarioId,
+            String operacion,
+            String request,
+            String response,
+            LocalDateTime fechaProceso,
+            LocalDateTime fechaRespuesta,
+            Integer httpCode,
+            String resultado
+    ) {
+        logExternalCall(SERVICIO_CREDIBANCO, arenaId, usuarioId, operacion, request, response, fechaProceso, fechaRespuesta, httpCode, resultado);
     }
 }

@@ -18,4 +18,7 @@ public interface ClientePagoRepository extends JpaRepository<ClientePago, Long> 
     List<ClientePago> findByArenaUsuarioIdAndBindingId(Long arenaUsuarioId, String bindingId);
     List<ClientePago> findByArenaIdAndArenaUsuarioIdAndBindingId(String arenaId, Long arenaUsuarioId, String bindingId);
     Optional<ClientePago> findByBindingId(String bindingId);
+    Optional<ClientePago> findByMpCustomerId(String mpCustomerId);
+    Optional<ClientePago> findFirstByArenaIdAndArenaUsuarioId(String arenaId, Long arenaUsuarioId);
+    Optional<ClientePago> findFirstByArenaUsuarioId(Long arenaUsuarioId);
 }

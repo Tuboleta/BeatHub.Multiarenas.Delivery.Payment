@@ -16,13 +16,13 @@ import org.springframework.web.bind.annotation.*;
 @RestController
 @RequestMapping("/transacciones")
 @RequiredArgsConstructor
-@Tag(name = "Pagos y Transacciones", description = "Endpoints para inicialización, consulta y gestión de pagos con Credibanco")
+@Tag(name = "Pagos y Transacciones", description = "Endpoints para inicialización, consulta y gestión de pagos con Mercado Pago y Credibanco")
 public class PaymentController {
 
     private final PaymentService paymentService;
 
     @PostMapping("/iniciar")
-    @Operation(summary = "Iniciar flujo de pago", description = "Registra la orden en el microservicio y genera la URL de checkout de Credibanco (register.do)")
+    @Operation(summary = "Iniciar flujo de pago", description = "Registra la orden en el microservicio y genera la URL de checkout (Mercado Pago o Credibanco)")
     public ResponseEntity<ApiResponse<PaymentInitResponse>> initiatePayment(
             @Valid @RequestBody InitPaymentRequest request,
             HttpServletRequest httpRequest
@@ -35,7 +35,7 @@ public class PaymentController {
     }
 
     @GetMapping("/{pedidoPagoId}/estado")
-    @Operation(summary = "Consultar estado de pago por ID", description = "Consulta y sincroniza el estado extendido de la transacción con Credibanco")
+    @Operation(summary = "Consultar estado de pago por ID", description = "Consulta y sincroniza el estado extendido de la transacción con la pasarela correspondiente")
     public ResponseEntity<ApiResponse<PaymentStatusResponse>> getStatus(
             @PathVariable Long pedidoPagoId,
             HttpServletRequest httpRequest
@@ -48,7 +48,7 @@ public class PaymentController {
     }
 
     @GetMapping("/referencia/{referenciaPago}/estado")
-    @Operation(summary = "Consultar estado de pago por Referencia", description = "Consulta el estado mediante la referencia generada (PAY-xxx)")
+    @Operation(summary = "Consultar estado de pago por Referencia", description = "Consulta el estado mediante la referencia generada (PAY-xxx o MP-ORD-xxx)")
     public ResponseEntity<ApiResponse<PaymentStatusResponse>> getStatusByReference(
             @PathVariable String referenciaPago,
             HttpServletRequest httpRequest
@@ -86,9 +86,22 @@ public class PaymentController {
         return ResponseEntity.ok(ApiResponse.ok(response));
     }
 
+    @GetMapping("/mercadopago/{mpOrderId}/estado")
+    @Operation(summary = "Consultar estado de pago por Order ID de Mercado Pago", description = "Consulta y sincroniza el estado mediante el orderId devuelto por Mercado Pago")
+    public ResponseEntity<ApiResponse<PaymentStatusResponse>> getStatusByMpOrderId(
+            @PathVariable String mpOrderId,
+            HttpServletRequest httpRequest
+    ) {
+        String arenaId = resolveArenaId(httpRequest);
+        Long usuarioId = resolveUsuarioId(httpRequest);
+
+        PaymentStatusResponse response = paymentService.queryPaymentStatusByMpOrderId(mpOrderId, arenaId, usuarioId);
+        return ResponseEntity.ok(ApiResponse.ok(response));
+    }
+
     @PostMapping("/reembolso")
     @PreAuthorize("hasAnyRole('SUPER_ADMIN', 'ADMIN_ARENA')")
-    @Operation(summary = "Solicitar anulación o reembolso", description = "Ejecuta solicitud refund.do ante Credibanco")
+    @Operation(summary = "Solicitar anulación o reembolso", description = "Ejecuta solicitud de reembolso ante la pasarela correspondiente")
     public ResponseEntity<ApiResponse<RefundResponse>> refundPayment(
             @Valid @RequestBody RefundPaymentRequest request,
             HttpServletRequest httpRequest
@@ -114,7 +127,7 @@ public class PaymentController {
     }
 
     @PostMapping("/pagar-token")
-    @Operation(summary = "Pagar con tarjeta guardada (Token / One-Click)", description = "Ejecuta cobro directo utilizando el bindingId tokenizado en Credibanco sin requerir reingresar los datos de la tarjeta")
+    @Operation(summary = "Pagar con tarjeta guardada (Token / One-Click)", description = "Ejecuta cobro directo utilizando el token o perfil recurrente guardado sin requerir reingresar los datos de la tarjeta")
     public ResponseEntity<ApiResponse<PaymentTokenResponse>> payWithToken(
             @Valid @RequestBody PayWithTokenRequest request,
             HttpServletRequest httpRequest
@@ -140,7 +153,7 @@ public class PaymentController {
     }
 
     @PostMapping("/tarjetas/tokenizar")
-    @Operation(summary = "Tokenizar tarjeta directamente con Credibanco", description = "Valida los datos de la tarjeta (Luhn, formato NOMBRE APELLIDO) y ejecuta el flujo oficial de verificación en Credibanco (register.do VERIFY + paymentorder.do tii=U + getOrderStatusExtended.do) para obtener el bindingId real")
+    @Operation(summary = "Tokenizar tarjeta directamente con la pasarela activa", description = "Valida y tokeniza tarjeta con la pasarela configurada (Mercado Pago o Credibanco)")
     public ResponseEntity<ApiResponse<TarjetaGuardadaResponse>> tokenizeCard(
             @Valid @RequestBody TokenizarTarjetaRequest request,
             HttpServletRequest httpRequest
@@ -193,7 +206,7 @@ public class PaymentController {
     }
 
     @DeleteMapping("/tarjetas/{tarjetaId}")
-    @Operation(summary = "Eliminar / Desvincular tarjeta", description = "Desactiva la tarjeta del usuario y solicita unBindCard.do a Credibanco")
+    @Operation(summary = "Eliminar / Desvincular tarjeta", description = "Desactiva la tarjeta del usuario en la pasarela y perfil local")
     public ResponseEntity<ApiResponse<Void>> deleteCard(
             @PathVariable Long tarjetaId,
             HttpServletRequest httpRequest

@@ -35,34 +35,47 @@ public class OrderingServiceClient {
     }
 
     public void updateOrderStatus(Long pedidoId, Integer nuevoEstadoId, String observacion, String authToken) {
-        updateOrderStatus(pedidoId, nuevoEstadoId, observacion, authToken, null, null, null);
+        updateOrderStatus(pedidoId, nuevoEstadoId, observacion, authToken, null, null, null, null);
     }
 
     public void updateOrderStatus(Long pedidoId, Integer nuevoEstadoId, String observacion, String authToken,
-                                  String autorizacion, String terminal, BigDecimal monto) {
+            String autorizacion, String terminal, BigDecimal monto) {
+        updateOrderStatus(pedidoId, nuevoEstadoId, observacion, authToken, autorizacion, terminal, monto, null);
+    }
+
+    public void updateOrderStatus(Long pedidoId, Integer nuevoEstadoId, String observacion, String authToken,
+            String autorizacion, String terminal, BigDecimal monto, String tipoPago) {
         String effectiveToken = resolveAuthToken(authToken);
 
-        // Mapeo defensivo de estados de Payment a Ordering:
-        // Payment 2 (Aprobado) -> Ordering 13 (PAGADO)
-        // Payment 4 (Reversado) -> Ordering 20 (CANCELADO)
-        // Payment 5 (Reembolsado/Rechazado) -> Ordering 21 (RECHAZADO)
+        // Mapeo defensivo de estados de Flujo 5 (Payment) a Flujo 4 (Ordering):
+        // Payment 23 / 2 (Aprobado) -> Ordering 13 (PAGADO)
+        // Payment 25 / 4 (Reversado) -> Ordering 20 (CANCELADO)
+        // Payment 24 / 26 / 3 / 5 (Rechazado/Anulado) -> Ordering 21 (RECHAZADO)
         Integer orderingEstadoId = nuevoEstadoId;
-        if (Integer.valueOf(2).equals(nuevoEstadoId)) {
+        if (Integer.valueOf(23).equals(nuevoEstadoId) || Integer.valueOf(2).equals(nuevoEstadoId)) {
             orderingEstadoId = 13;
-        } else if (Integer.valueOf(4).equals(nuevoEstadoId)) {
+        } else if (Integer.valueOf(25).equals(nuevoEstadoId) || Integer.valueOf(4).equals(nuevoEstadoId)) {
             orderingEstadoId = 20;
-        } else if (Integer.valueOf(5).equals(nuevoEstadoId)) {
+        } else if (Integer.valueOf(24).equals(nuevoEstadoId) || Integer.valueOf(26).equals(nuevoEstadoId)
+                || Integer.valueOf(3).equals(nuevoEstadoId) || Integer.valueOf(5).equals(nuevoEstadoId)) {
             orderingEstadoId = 21;
         }
 
-        // Si el estado es Pagado (13), intentar confirmar formalmente el pago en Ordering (TCPOS + Entrega)
+        // Si el estado es Pagado (13), intentar confirmar formalmente el pago en
+        // Ordering (TCPOS + Entrega)
         if (Integer.valueOf(13).equals(orderingEstadoId)) {
             try {
                 String confirmUrl = orderingServiceUrl + "/pedidos/" + pedidoId + "/confirmar-pago";
                 Map<String, Object> confirmBody = new HashMap<>();
-                confirmBody.put("tipoPago", "CREDIBANCO");
-                confirmBody.put("autorizacion", (autorizacion != null && !autorizacion.isBlank()) ? autorizacion : "APROBADO_CREDIBANCO");
-                confirmBody.put("terminal", (terminal != null && !terminal.isBlank()) ? terminal : "CREDIBANCO_WEB");
+
+                String resolvedTipoPago = (tipoPago != null && !tipoPago.isBlank())
+                        ? tipoPago
+                        : ("MERCADOPAGO".equalsIgnoreCase(terminal) ? "Tarjeta de crédito o débito"
+                                : "Tarjeta de crédito o débito");
+                confirmBody.put("tipoPago", resolvedTipoPago);
+                confirmBody.put("autorizacion",
+                        (autorizacion != null && !autorizacion.isBlank()) ? autorizacion : "APROBADO");
+                confirmBody.put("terminal", (terminal != null && !terminal.isBlank()) ? terminal : "PWA_GATEWAY");
                 if (monto != null && monto.compareTo(BigDecimal.ZERO) > 0) {
                     confirmBody.put("monto", monto);
                 }
@@ -75,10 +88,12 @@ public class OrderingServiceClient {
                         .body(confirmBody);
 
                 confirmReq.retrieve().toBodilessEntity();
-                log.info("Pago confirmado exitosamente en Ordering para pedido {} vía /confirmar-pago", pedidoId);
+                log.info("Pago confirmado exitosamente en Ordering para pedido {} vía /confirmar-pago con medio: {}",
+                        pedidoId, resolvedTipoPago);
                 return;
             } catch (Exception ex) {
-                log.warn("No se pudo invocar /confirmar-pago para pedido {}: {}. Aplicando fallback a /estado", pedidoId, ex.getMessage());
+                log.warn("No se pudo invocar /confirmar-pago para pedido {}: {}. Aplicando fallback a /estado",
+                        pedidoId, ex.getMessage());
             }
         }
 
@@ -87,8 +102,8 @@ public class OrderingServiceClient {
         Map<String, Object> body = Map.of(
                 "nuevoEstadoId", orderingEstadoId,
                 "estadoId", orderingEstadoId,
-                "observacion", observacion != null ? observacion : "Estado actualizado por pasarela de pagos Credibanco"
-        );
+                "observacion",
+                observacion != null ? observacion : "Estado actualizado por pasarela de pagos Credibanco");
 
         try {
             RestClient.RequestHeadersSpec<?> req = restClientBuilder.build()
@@ -142,7 +157,8 @@ public class OrderingServiceClient {
             req.retrieve().toBodilessEntity();
             log.info("Asociado grupoPagoId {} al pedido {} en Ordering", grupoPagoId, pedidoId);
         } catch (Exception ex) {
-            log.error("Error al asociar grupoPagoId {} al pedido {} en Ordering: {}", grupoPagoId, pedidoId, ex.getMessage());
+            log.error("Error al asociar grupoPagoId {} al pedido {} en Ordering: {}", grupoPagoId, pedidoId,
+                    ex.getMessage());
         }
     }
 }

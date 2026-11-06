@@ -32,6 +32,9 @@ public class ClientePago {
     @Column(name = "binding_id", length = 255)
     private String bindingId;
 
+    @Column(name = "mp_customer_id", length = 100)
+    private String mpCustomerId;
+
     @Column(name = "estado_id", nullable = false)
     private Integer estadoId;
 

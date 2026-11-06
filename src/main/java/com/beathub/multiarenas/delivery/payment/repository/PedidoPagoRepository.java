@@ -11,9 +11,12 @@ import java.util.Optional;
 public interface PedidoPagoRepository extends JpaRepository<PedidoPago, Long> {
     Optional<PedidoPago> findByReferenciaPago(String referenciaPago);
     Optional<PedidoPago> findByCredibancoOrderId(String credibancoOrderId);
+    Optional<PedidoPago> findByMpOrderId(String mpOrderId);
+    Optional<PedidoPago> findByMpPaymentId(String mpPaymentId);
     Optional<PedidoPago> findByMdOrder(String mdOrder);
     List<PedidoPago> findByPedidoId(Long pedidoId);
     List<PedidoPago> findByUsuarioId(Long usuarioId);
     List<PedidoPago> findByGrupoPagoUsuario_GrupoPago_Id(Long grupoPagoId);
     List<PedidoPago> findByEstadoIdAndCredibancoOrderIdIsNotNull(Integer estadoId);
+    List<PedidoPago> findByEstadoIdAndMpOrderIdIsNotNull(Integer estadoId);
 }

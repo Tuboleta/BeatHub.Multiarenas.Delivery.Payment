@@ -16,7 +16,7 @@ public class PaymentStatusResponse {
     private Long pedidoPagoId;
     private Long pedidoId;
     private String referenciaPago;
-    private String credibancoOrderId;
+    private String orderId;
     private String mdOrder;
     private BigDecimal monto;
     private String moneda;
@@ -25,7 +25,19 @@ public class PaymentStatusResponse {
     private String actionCode;
     private String actionCodeDescription;
     private String authCode;
+    private String medioPago;
     private String errorCode;
     private String errorMessage;
     private LocalDateTime fechaPago;
+
+    public void setCredibancoOrderId(String credibancoOrderId) {
+        this.orderId = credibancoOrderId;
+    }
+
+    public static class PaymentStatusResponseBuilder {
+        public PaymentStatusResponseBuilder credibancoOrderId(String credibancoOrderId) {
+            this.orderId = credibancoOrderId;
+            return this;
+        }
+    }
 }

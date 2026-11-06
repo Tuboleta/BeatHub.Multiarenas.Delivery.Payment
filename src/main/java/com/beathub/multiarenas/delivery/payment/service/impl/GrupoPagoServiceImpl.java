@@ -506,21 +506,46 @@ public class GrupoPagoServiceImpl implements GrupoPagoService {
         // Modalidad: LIBRE_PAGO vs POR_PARTES_IGUALES
         boolean esLibre = "LIBRE_PAGO".equalsIgnoreCase(grupoPago.getModalidadDivision());
 
-        // Obtener o auto-unir al participante
-        GrupoPagoUsuario gpu = grupoPagoUsuarioRepository.findByGrupoPagoIdAndUsuarioId(grupoPagoId, usuarioId)
-                .orElseGet(() -> {
-                    BigDecimal montoAsignado = esLibre ? null : grupoPago.getMontoPreasignado();
-                    GrupoPagoUsuario nuevo = GrupoPagoUsuario.builder()
-                            .grupoPago(grupoPago)
-                            .usuarioId(usuarioId)
-                            .montoAsignado(montoAsignado)
-                            .montoPagado(BigDecimal.ZERO)
-                            .esLider(false)
-                            .estadoId(1)
-                            .creacionUsuario(usuarioId)
-                            .build();
-                    return grupoPagoUsuarioRepository.save(nuevo);
-                });
+        // Obtener o auto-unir al participante (con soporte para invitados anónimos)
+        GrupoPagoUsuario gpu;
+        if (usuarioId != null && usuarioId > 0) {
+            gpu = grupoPagoUsuarioRepository.findByGrupoPagoIdAndUsuarioId(grupoPagoId, usuarioId)
+                    .orElseGet(() -> {
+                        BigDecimal montoAsignado = esLibre ? null : grupoPago.getMontoPreasignado();
+                        GrupoPagoUsuario nuevo = GrupoPagoUsuario.builder()
+                                .grupoPago(grupoPago)
+                                .usuarioId(usuarioId)
+                                .montoAsignado(montoAsignado)
+                                .montoPagado(BigDecimal.ZERO)
+                                .esLider(false)
+                                .estadoId(1)
+                                .creacionUsuario(usuarioId)
+                                .build();
+                        return grupoPagoUsuarioRepository.save(nuevo);
+                    });
+        } else {
+            // Participante invitado / amigo que accede mediante enlace o QR sin registrarse
+            String nombreInvitado = (request != null && request.getNombre() != null && !request.getNombre().isBlank())
+                    ? request.getNombre().trim()
+                    : "Invitado";
+            String emailInvitado = (request != null && request.getEmail() != null && !request.getEmail().isBlank())
+                    ? request.getEmail().trim()
+                    : null;
+
+            BigDecimal montoAsignado = esLibre ? null : grupoPago.getMontoPreasignado();
+            GrupoPagoUsuario nuevo = GrupoPagoUsuario.builder()
+                    .grupoPago(grupoPago)
+                    .usuarioId(0L)
+                    .nombreInvitado(nombreInvitado)
+                    .emailInvitado(emailInvitado)
+                    .montoAsignado(montoAsignado)
+                    .montoPagado(BigDecimal.ZERO)
+                    .esLider(false)
+                    .estadoId(1)
+                    .creacionUsuario(0L)
+                    .build();
+            gpu = grupoPagoUsuarioRepository.save(nuevo);
+        }
 
         BigDecimal montoAPagar = request != null ? request.getMonto() : null;
 
@@ -540,8 +565,15 @@ public class GrupoPagoServiceImpl implements GrupoPagoService {
                 montoAPagar = (cuota != null) ? cuota.subtract(pagado).max(BigDecimal.ZERO) : grupoPago.getSaldoPendiente();
             }
 
+            // Si el participante ya pagó su cuota pero desea liquidar el saldo restante del grupo:
+            if ((montoAPagar == null || montoAPagar.compareTo(BigDecimal.ZERO) <= 0)
+                    && grupoPago.getSaldoPendiente() != null
+                    && grupoPago.getSaldoPendiente().compareTo(BigDecimal.ZERO) > 0) {
+                montoAPagar = grupoPago.getSaldoPendiente();
+            }
+
             if (montoAPagar == null || montoAPagar.compareTo(BigDecimal.ZERO) <= 0) {
-                throw new BadRequestException("No tiene saldo pendiente por pagar en su cuota preasignada.");
+                throw new BadRequestException("No tiene saldo pendiente por pagar en este grupo.");
             }
 
             // Validar que el monto no exceda el saldo pendiente global del grupo
@@ -563,7 +595,17 @@ public class GrupoPagoServiceImpl implements GrupoPagoService {
         initReq.setDescription(request != null && request.getDescription() != null && !request.getDescription().isBlank()
                 ? request.getDescription()
                 : "Aporte Vaca " + grupoPago.getNombre() + " (" + grupoPago.getCodigoUnico() + ")");
-        initReq.setExtraParams(request != null ? request.getExtraParams() : null);
+        java.util.Map<String, Object> extraParams = (request != null && request.getExtraParams() != null)
+                ? new java.util.HashMap<>(request.getExtraParams()) : new java.util.HashMap<>();
+        if (request != null) {
+            if (request.getNombre() != null && !request.getNombre().isBlank()) {
+                extraParams.put("nombre", request.getNombre().trim());
+            }
+            if (request.getEmail() != null && !request.getEmail().isBlank()) {
+                extraParams.put("email", request.getEmail().trim());
+            }
+        }
+        initReq.setExtraParams(extraParams);
 
         String arenaFinal = (arenaId != null && !arenaId.isBlank()) ? arenaId : grupoPago.getArenaId();
         return paymentService.initiatePayment(initReq, arenaFinal, usuarioId);
@@ -623,6 +665,9 @@ public class GrupoPagoServiceImpl implements GrupoPagoService {
         List<PedidoPago> pagos = pedidoPagoRepository.findByGrupoPagoUsuario_GrupoPago_Id(gp.getId());
 
         List<GrupoPagoUsuarioResponse> participantesDtos = usuarios.stream()
+                .filter(u -> Boolean.TRUE.equals(u.getEsLider())
+                        || (u.getMontoPagado() != null && u.getMontoPagado().compareTo(BigDecimal.ZERO) > 0)
+                        || Integer.valueOf(2).equals(u.getEstadoId()))
                 .map(this::mapearUsuarioResponse)
                 .collect(Collectors.toList());
 
@@ -720,7 +765,7 @@ public class GrupoPagoServiceImpl implements GrupoPagoService {
 
         String nombreUsuario = null;
         String email = null;
-        if (u.getUsuarioId() != null) {
+        if (u.getUsuarioId() != null && u.getUsuarioId() > 0) {
             try {
                 var userOpt = authClient.getUsuario(u.getUsuarioId());
                 if (userOpt.isPresent()) {
@@ -731,10 +776,19 @@ public class GrupoPagoServiceImpl implements GrupoPagoService {
             } catch (Exception ex) {
                 log.warn("Error al resolver nombre de usuario para ID {}: {}", u.getUsuarioId(), ex.getMessage());
             }
+        } else {
+            nombreUsuario = u.getNombreInvitado();
+            email = u.getEmailInvitado();
         }
 
         if (nombreUsuario == null || nombreUsuario.isBlank()) {
-            nombreUsuario = Boolean.TRUE.equals(u.getEsLider()) ? "Líder del grupo" : "Participante #" + u.getId();
+            if (Boolean.TRUE.equals(u.getEsLider())) {
+                nombreUsuario = "Líder del grupo";
+            } else if (u.getUsuarioId() == null || u.getUsuarioId() == 0L) {
+                nombreUsuario = "Invitado";
+            } else {
+                nombreUsuario = "Participante #" + u.getId();
+            }
         }
 
         return GrupoPagoUsuarioResponse.builder()

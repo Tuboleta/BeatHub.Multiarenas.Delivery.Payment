@@ -1197,8 +1197,7 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
             return true;
         }
         // Inmutabilidad de Pagado / Aprobado (23 en Flujo 5 o 2 histórico):
-        boolean isApproved = Integer.valueOf(PedidoPago.ESTADO_APROBADO).equals(current
-        // stadoId)
+        boolean isApproved = Integer.valueOf(PedidoPago.ESTADO_APROBADO).equals(currentEstadoId)
                 || Integer.valueOf(2).equals(currentEstadoId);
         if (isApproved) {
             if (newEstadoId == PedidoPago.ESTADO_REVERSADO || newEstadoId == 25 || newEstadoId == 4) {
@@ -1211,8 +1210,7 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
         }
         // Transacciones ya Reversadas / Reembolsadas (25 en Flujo 5 o 4 histórico): estado terminal
         boolean isRefunded = Integer.valueOf(PedidoPago.ESTADO_REVERSADO).equals(currentEstadoId)
-                || In
-                    teger.valueOf(25).equals(currentEstadoId)
+                || Integer.valueOf(25).equals(currentEstadoId)
                 || Integer.valueOf(4).equals(currentEstadoId);
         if (isRefunded) {
             log.info("🛡️ [MercadoPago] Ignorando cambio de estado para transacción ya REVERSADA/REEMBOLSADA: estado actual={} -> nuevo intentado={} ({})",
@@ -1225,7 +1223,6 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
     private void applyStateTransition(PedidoPago pedidoPago, int newEstadoId, String rawStatus, String statusDetail,
             String resolvedMedioPago) {
         Integer currentEstadoId = pedidoPago.getEstadoId();
-            // 
 
         if (!isStateChangeAllowed(currentEstadoId, newEstadoId, rawStatus)) {
             // Guardar solo metadatos si no existían (authCode, actionCode, etc.) sin alterar el estado
@@ -1238,11 +1235,9 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
                     "MERCADOPAGO", resolvedMedioPago);
         } else if (newEstadoId == PedidoPago.ESTADO_REVERSADO || newEstadoId == 4) {
             pedidoPago.setEstadoId(PedidoPago.ESTADO_REVERSADO);
-            pedidoPago.setErrorMessage(statusDetail != null ? statusDetail : 
-                        Reembolso procesado en Mercado Pago");
+            pedidoPago.setErrorMessage(statusDetail != null ? statusDetail : "Reembolso procesado en Mercado Pago");
             pedidoPagoRepository.save(pedidoPago);
             try {
-                        
                 orderingClient.updateOrderStatus(pedidoPago.getPedidoId(), PedidoPago.ESTADO_REVERSADO, "Pedido reembolsado/reversado en Mercado Pago", null);
             } catch (Exception ex) {
                 log.warn("No se pudo notificar reembolso a Ordering para pedido #{}: {}", pedidoPago.getPedidoId(), ex.getMessage());
@@ -1250,8 +1245,7 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
         } else if (newEstadoId == PedidoPago.ESTADO_RECHAZADO || newEstadoId == 3) {
             pedidoPago.setEstadoId(PedidoPago.ESTADO_RECHAZADO);
             pedidoPago.setErrorMessage(statusDetail != null ? statusDetail : "Pago rechazado por Mercado Pago");
-            pedidoPago
-                    Repository.save(pedidoPago);
+            pedidoPagoRepository.save(pedidoPago);
         } else if (newEstadoId == PedidoPago.ESTADO_ANULADO || newEstadoId == 5) {
             pedidoPago.setEstadoId(PedidoPago.ESTADO_ANULADO);
             pedidoPago.setErrorMessage(statusDetail != null ? statusDetail : "Pago cancelado o anulado por Mercado Pago");

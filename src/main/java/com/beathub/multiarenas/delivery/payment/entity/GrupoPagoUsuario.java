@@ -40,6 +40,12 @@ public class GrupoPagoUsuario {
     @Column(name = "estado_id", nullable = false)
     private Integer estadoId; // 1: Pendiente/Activo, 2: Pagado, 3: Retirado
 
+    @Column(name = "nombre_invitado", length = 120)
+    private String nombreInvitado;
+
+    @Column(name = "email_invitado", length = 120)
+    private String emailInvitado;
+
     @Column(name = "creacion_fecha", nullable = false, updatable = false)
     private LocalDateTime creacionFecha;
 

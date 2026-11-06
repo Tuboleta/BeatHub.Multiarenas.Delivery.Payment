@@ -15,6 +15,8 @@ import com.beathub.multiarenas.delivery.payment.exception.ResourceNotFoundExcept
 import com.beathub.multiarenas.delivery.payment.repository.*;
 import com.beathub.multiarenas.delivery.payment.service.HmacSignatureService;
 import com.beathub.multiarenas.delivery.payment.service.PaymentService;
+import com.beathub.multiarenas.delivery.payment.service.MercadoPagoService;
+import com.beathub.multiarenas.delivery.payment.service.IntegrationAuditService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -46,13 +48,24 @@ public class PaymentServiceImpl implements PaymentService {
     private final NotificationServiceClient notificationServiceClient;
     private final CredibancoProperties credibancoProperties;
     private final HmacSignatureService hmacSignatureService;
+    private final MercadoPagoService mercadoPagoService;
+    @org.springframework.beans.factory.annotation.Value("${payment.default-gateway:MERCADOPAGO}")
+    private String defaultGateway;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     @Override
     @Transactional
     public PaymentInitResponse initiatePayment(InitPaymentRequest request, String arenaId, Long usuarioId) {
+        boolean explicitCredibanco = (request.getExtraParams() != null
+                && "credibanco".equalsIgnoreCase(String.valueOf(request.getExtraParams().get("pasarela"))))
+                || "CREDIBANCO".equalsIgnoreCase(defaultGateway);
+        if (!explicitCredibanco) {
+            return mercadoPagoService.initiateOrder(request, arenaId, usuarioId);
+        }
+
         // Generar referencia única de pago
-        String referenciaPago = "PAY-" + System.currentTimeMillis() + "-" + UUID.randomUUID().toString().substring(0, 6).toUpperCase();
+        String referenciaPago = "PAY-" + System.currentTimeMillis() + "-"
+                + UUID.randomUUID().toString().substring(0, 6).toUpperCase();
 
         TipoPago tipoPago = tipoPagoRepository.findById(request.getTipoPagoId())
                 .orElseGet(() -> tipoPagoRepository.findById(1).orElse(null));
@@ -66,11 +79,12 @@ public class PaymentServiceImpl implements PaymentService {
                 : null;
 
         boolean solicitarTokenizacion = Boolean.TRUE.equals(request.getGuardarTarjeta())
-                || (request.getExtraParams() != null && (
-                        Boolean.parseBoolean(String.valueOf(request.getExtraParams().get("guardarTarjeta")))
-                        || Boolean.parseBoolean(String.valueOf(request.getExtraParams().get("solicitarTokenizacion")))
-                   ));
-        Map<String, Object> extraParams = request.getExtraParams() != null ? new HashMap<>(request.getExtraParams()) : new HashMap<>();
+                || (request.getExtraParams() != null
+                        && (Boolean.parseBoolean(String.valueOf(request.getExtraParams().get("guardarTarjeta")))
+                                || Boolean.parseBoolean(
+                                        String.valueOf(request.getExtraParams().get("solicitarTokenizacion")))));
+        Map<String, Object> extraParams = request.getExtraParams() != null ? new HashMap<>(request.getExtraParams())
+                : new HashMap<>();
         extraParams.put("guardarTarjeta", solicitarTokenizacion);
 
         String jsonParamsStr = null;
@@ -83,15 +97,18 @@ public class PaymentServiceImpl implements PaymentService {
         // C-05: El monto del pago se valida contra el total real en Ordering
         if (request.getPedidoId() != null) {
             try {
-                com.beathub.multiarenas.delivery.payment.client.dto.PedidoClientResponse pedido =
-                        orderingClient.getPedido(request.getPedidoId(), null).orElse(null);
+                com.beathub.multiarenas.delivery.payment.client.dto.PedidoClientResponse pedido = orderingClient
+                        .getPedido(request.getPedidoId(), null).orElse(null);
                 if (pedido != null) {
-                    if (pedido.getUsuarioId() != null && !pedido.getUsuarioId().equals(usuarioId) && request.getGrupoPagoUsuarioId() == null) {
+                    if (pedido.getUsuarioId() != null && !pedido.getUsuarioId().equals(usuarioId)
+                            && request.getGrupoPagoUsuarioId() == null) {
                         throw new PaymentException("El pedido no pertenece al usuario autenticado");
                     }
-                    if (request.getGrupoPagoUsuarioId() == null && pedido.getValorTotal() != null && pedido.getValorTotal().compareTo(BigDecimal.ZERO) > 0) {
+                    if (request.getGrupoPagoUsuarioId() == null && pedido.getValorTotal() != null
+                            && pedido.getValorTotal().compareTo(BigDecimal.ZERO) > 0) {
                         if (request.getMonto() == null || request.getMonto().compareTo(pedido.getValorTotal()) != 0) {
-                            log.info("Monto de pago sincronizado con valor oficial del pedido: {} -> {}", request.getMonto(), pedido.getValorTotal());
+                            log.info("Monto de pago sincronizado con valor oficial del pedido: {} -> {}",
+                                    request.getMonto(), pedido.getValorTotal());
                             request.setMonto(pedido.getValorTotal());
                         }
                     }
@@ -117,7 +134,7 @@ public class PaymentServiceImpl implements PaymentService {
                 .moneda("COP")
                 .referenciaPago(referenciaPago)
                 .jsonParams(jsonParamsStr)
-                .estadoId(1) // 1: Iniciado
+                .estadoId(PedidoPago.ESTADO_INICIADO) // 22: Iniciado (Flujo 5)
                 .creacionUsuario(usuarioId)
                 .build();
 
@@ -125,23 +142,30 @@ public class PaymentServiceImpl implements PaymentService {
 
         String returnUrl = (request.getReturnUrl() != null && !request.getReturnUrl().isBlank())
                 ? request.getReturnUrl()
-                : (credibancoProperties.getDefaultReturnUrl() != null && !credibancoProperties.getDefaultReturnUrl().isBlank()
-                    ? credibancoProperties.getDefaultReturnUrl()
-                    : "http://localhost:3000/checkout/payment-return");
+                : (credibancoProperties.getDefaultReturnUrl() != null
+                        && !credibancoProperties.getDefaultReturnUrl().isBlank()
+                                ? credibancoProperties.getDefaultReturnUrl()
+                                : "http://localhost:3000/checkout/payment-return");
 
         String failUrl = (request.getFailUrl() != null && !request.getFailUrl().isBlank())
                 ? request.getFailUrl()
-                : (credibancoProperties.getDefaultFailUrl() != null && !credibancoProperties.getDefaultFailUrl().isBlank()
-                    ? credibancoProperties.getDefaultFailUrl()
-                    : "http://localhost:3000/checkout/payment-return?status=failed");
+                : (credibancoProperties.getDefaultFailUrl() != null
+                        && !credibancoProperties.getDefaultFailUrl().isBlank()
+                                ? credibancoProperties.getDefaultFailUrl()
+                                : "http://localhost:3000/checkout/payment-return?status=failed");
 
-        // Si el cliente eligió guardar la tarjeta, se envía su clientId a Credibanco asociado a la arena (Modelo A).
-        // NOTA: NO se envía features=AUTO_PAYMENT por defecto ya que Credibanco rechaza con errorCode 13
-        // ('El comercio no tiene permiso para usar el pago automático') si la terminal UAT no está habilitada.
-        // Solo se envía si viene explícito en extraParams o si credibancoProperties.getAutoPaymentEnabled() es true.
-        String clientIdParaCredibanco = (request.getExtraParams() != null && request.getExtraParams().containsKey("clientId"))
-                ? String.valueOf(request.getExtraParams().get("clientId"))
-                : (solicitarTokenizacion ? resolverClientId(arenaId, usuarioId) : null);
+        // Si el cliente eligió guardar la tarjeta, se envía su clientId a Credibanco
+        // asociado a la arena (Modelo A).
+        // NOTA: NO se envía features=AUTO_PAYMENT por defecto ya que Credibanco rechaza
+        // con errorCode 13
+        // ('El comercio no tiene permiso para usar el pago automático') si la terminal
+        // UAT no está habilitada.
+        // Solo se envía si viene explícito en extraParams o si
+        // credibancoProperties.getAutoPaymentEnabled() es true.
+        String clientIdParaCredibanco = (request.getExtraParams() != null
+                && request.getExtraParams().containsKey("clientId"))
+                        ? String.valueOf(request.getExtraParams().get("clientId"))
+                        : (solicitarTokenizacion ? resolverClientId(arenaId, usuarioId) : null);
 
         String featuresParaCredibanco = null;
         if (request.getExtraParams() != null && request.getExtraParams().containsKey("features")) {
@@ -152,7 +176,8 @@ public class PaymentServiceImpl implements PaymentService {
 
         // Si el cliente paga con una tarjeta guardada previamente enlazada (bindingId):
         String bindingIdParaCredibanco = request.getBindingId();
-        if (bindingIdParaCredibanco == null && request.getExtraParams() != null && request.getExtraParams().containsKey("bindingId")) {
+        if (bindingIdParaCredibanco == null && request.getExtraParams() != null
+                && request.getExtraParams().containsKey("bindingId")) {
             bindingIdParaCredibanco = String.valueOf(request.getExtraParams().get("bindingId"));
         }
         if (bindingIdParaCredibanco != null && !bindingIdParaCredibanco.isBlank()) {
@@ -163,7 +188,8 @@ public class PaymentServiceImpl implements PaymentService {
                         .or(() -> tarjetaClientePagoRepository.findByIdAndClientePagoArenaUsuarioId(cardId, usuarioId))
                         .orElse(null);
                 if (tc != null) {
-                    bindingIdParaCredibanco = tc.getTarjetaId() != null ? tc.getTarjetaId() : tc.getClientePago().getBindingId();
+                    bindingIdParaCredibanco = tc.getTarjetaId() != null ? tc.getTarjetaId()
+                            : tc.getClientePago().getBindingId();
                 }
             }
             if (clientIdParaCredibanco == null) {
@@ -171,23 +197,24 @@ public class PaymentServiceImpl implements PaymentService {
             }
         }
 
-        // Llamar a Credibanco register.do (con bindingId si es pago con tarjeta guardada)
+        // Llamar a Credibanco register.do (con bindingId si es pago con tarjeta
+        // guardada)
         CredibancoRegisterResponse credibancoResp = credibancoClient.registerOrder(
                 referenciaPago,
                 request.getMonto(),
                 returnUrl,
                 failUrl,
-                request.getDescription() != null ? request.getDescription() : "Pedido BeatHub #" + request.getPedidoId(),
+                request.getDescription() != null ? request.getDescription()
+                        : "Pedido BeatHub #" + request.getPedidoId(),
                 jsonParamsStr,
                 clientIdParaCredibanco,
                 bindingIdParaCredibanco,
                 featuresParaCredibanco,
                 arenaId,
-                usuarioId
-        );
+                usuarioId);
 
         if (!credibancoResp.isSuccessful()) {
-            pedidoPago.setEstadoId(3); // 3: Rechazado
+            pedidoPago.setEstadoId(PedidoPago.ESTADO_RECHAZADO); // 24: Rechazado (Flujo 5)
             pedidoPago.setErrorCode(credibancoResp.getErrorCode());
             pedidoPago.setErrorMessage(credibancoResp.getErrorMessage());
             pedidoPagoRepository.save(pedidoPago);
@@ -205,7 +232,7 @@ public class PaymentServiceImpl implements PaymentService {
                 .pedidoPagoId(pedidoPago.getId())
                 .pedidoId(pedidoPago.getPedidoId())
                 .referenciaPago(referenciaPago)
-                .credibancoOrderId(credibancoResp.getOrderId())
+                .orderId(credibancoResp.getOrderId())
                 .formUrl(credibancoResp.getFormUrl())
                 .monto(pedidoPago.getMonto())
                 .moneda(pedidoPago.getMoneda())
@@ -218,7 +245,14 @@ public class PaymentServiceImpl implements PaymentService {
     @Transactional
     public PaymentStatusResponse queryPaymentStatus(Long pedidoPagoId, String arenaId, Long usuarioId) {
         PedidoPago pedidoPago = pedidoPagoRepository.findById(pedidoPagoId)
-                .orElseThrow(() -> new ResourceNotFoundException("PedidoPago con ID " + pedidoPagoId + " no encontrado"));
+                .orElseThrow(
+                        () -> new ResourceNotFoundException("PedidoPago con ID " + pedidoPagoId + " no encontrado"));
+
+        if (Integer.valueOf(IntegrationAuditService.SERVICIO_MERCADOPAGO).equals(pedidoPago.getPasarelaId())
+                || (pedidoPago.getMpOrderId() != null && !Integer.valueOf(IntegrationAuditService.SERVICIO_CREDIBANCO)
+                        .equals(pedidoPago.getPasarelaId()))) {
+            return mercadoPagoService.queryOrderStatus(pedidoPagoId, arenaId, usuarioId);
+        }
 
         return syncAndMapPaymentStatus(pedidoPago, arenaId, usuarioId);
     }
@@ -227,7 +261,14 @@ public class PaymentServiceImpl implements PaymentService {
     @Transactional
     public PaymentStatusResponse queryPaymentStatusByReference(String referenciaPago, String arenaId, Long usuarioId) {
         PedidoPago pedidoPago = pedidoPagoRepository.findByReferenciaPago(referenciaPago)
-                .orElseThrow(() -> new ResourceNotFoundException("PedidoPago con referencia " + referenciaPago + " no encontrado"));
+                .orElseThrow(() -> new ResourceNotFoundException(
+                        "PedidoPago con referencia " + referenciaPago + " no encontrado"));
+
+        if (Integer.valueOf(IntegrationAuditService.SERVICIO_MERCADOPAGO).equals(pedidoPago.getPasarelaId())
+                || (pedidoPago.getMpOrderId() != null && !Integer.valueOf(IntegrationAuditService.SERVICIO_CREDIBANCO)
+                        .equals(pedidoPago.getPasarelaId()))) {
+            return mercadoPagoService.queryOrderByReference(referenciaPago, arenaId, usuarioId);
+        }
 
         return syncAndMapPaymentStatus(pedidoPago, arenaId, usuarioId);
     }
@@ -240,14 +281,36 @@ public class PaymentServiceImpl implements PaymentService {
             throw new ResourceNotFoundException("No se encontró registro de pago para el pedido " + pedidoId);
         }
         PedidoPago masReciente = pagos.get(pagos.size() - 1);
+        if (Integer.valueOf(IntegrationAuditService.SERVICIO_MERCADOPAGO).equals(masReciente.getPasarelaId())
+                || (masReciente.getMpOrderId() != null && !Integer.valueOf(IntegrationAuditService.SERVICIO_CREDIBANCO)
+                        .equals(masReciente.getPasarelaId()))) {
+            return mercadoPagoService.queryOrderByPedidoId(pedidoId, arenaId, usuarioId);
+        }
         return syncAndMapPaymentStatus(masReciente, arenaId, usuarioId);
     }
 
     @Override
     @Transactional
-    public PaymentStatusResponse queryPaymentStatusByCredibancoOrderId(String credibancoOrderId, String arenaId, Long usuarioId) {
+    public PaymentStatusResponse queryPaymentStatusByMpOrderId(String mpOrderId, String arenaId, Long usuarioId) {
+        return mercadoPagoService.queryOrderByMpOrderId(mpOrderId, arenaId, usuarioId);
+    }
+
+    @Override
+    @Transactional
+    public PaymentStatusResponse queryPaymentStatusByCredibancoOrderId(String credibancoOrderId, String arenaId,
+            Long usuarioId) {
         PedidoPago pedidoPago = pedidoPagoRepository.findByCredibancoOrderId(credibancoOrderId)
-                .orElseThrow(() -> new ResourceNotFoundException("PedidoPago no encontrado para Credibanco Order ID: " + credibancoOrderId));
+                .or(() -> pedidoPagoRepository.findByMpOrderId(credibancoOrderId))
+                .orElse(null);
+
+        if (pedidoPago == null) {
+            throw new ResourceNotFoundException("PedidoPago no encontrado para Order ID: " + credibancoOrderId);
+        }
+
+        if (Integer.valueOf(IntegrationAuditService.SERVICIO_MERCADOPAGO).equals(pedidoPago.getPasarelaId())
+                || pedidoPago.getMpOrderId() != null) {
+            return mercadoPagoService.queryOrderByMpOrderId(pedidoPago.getMpOrderId(), arenaId, usuarioId);
+        }
 
         return syncAndMapPaymentStatus(pedidoPago, arenaId, usuarioId);
     }
@@ -260,8 +323,7 @@ public class PaymentServiceImpl implements PaymentService {
                         pedidoPago.getCredibancoOrderId(),
                         pedidoPago.getReferenciaPago(),
                         arenaId,
-                        usuarioId
-                );
+                        usuarioId);
 
                 if (statusResp != null) {
                     pedidoPago.setActionCode(statusResp.getActionCode());
@@ -272,17 +334,20 @@ public class PaymentServiceImpl implements PaymentService {
                     pedidoPago.setErrorMessage(statusResp.getErrorMessage());
 
                     if (statusResp.isApproved()) {
-                        onPaymentApproved(pedidoPago, "Pago confirmado en Credibanco (authCode: " + pedidoPago.getAuthCode() + ")",
+                        onPaymentApproved(pedidoPago,
+                                "Pago confirmado en Credibanco (authCode: " + pedidoPago.getAuthCode() + ")",
                                 pedidoPago.getAuthCode(), statusResp.getTerminal());
 
                         boolean debeGuardarTarjeta = false;
                         if (pedidoPago.getJsonParams() != null) {
                             try {
-                                com.fasterxml.jackson.databind.JsonNode jn = objectMapper.readTree(pedidoPago.getJsonParams());
+                                com.fasterxml.jackson.databind.JsonNode jn = objectMapper
+                                        .readTree(pedidoPago.getJsonParams());
                                 if (jn.has("guardarTarjeta")) {
                                     debeGuardarTarjeta = jn.get("guardarTarjeta").asBoolean(false);
                                 }
-                            } catch (Exception ignored) {}
+                            } catch (Exception ignored) {
+                            }
                         }
                         if (!debeGuardarTarjeta && statusResp.getMerchantOrderParams() != null) {
                             for (Map<String, Object> mop : statusResp.getMerchantOrderParams()) {
@@ -294,20 +359,28 @@ public class PaymentServiceImpl implements PaymentService {
                             }
                         }
 
-                        // Guardado de tarjeta: La fuente de la verdad es el consentimiento del usuario en Credibanco.
-                        // Solo si el usuario marcó el check en Credibanco, la pasarela retorna bindingInfo con un bindingId legítimo (diferente a mdOrder).
+                        // Guardado de tarjeta: La fuente de la verdad es el consentimiento del usuario
+                        // en Credibanco.
+                        // Solo si el usuario marcó el check en Credibanco, la pasarela retorna
+                        // bindingInfo con un bindingId legítimo (diferente a mdOrder).
                         String bindingId = statusResp.getBindingId();
-                        String mdOrder = pedidoPago.getMdOrder() != null ? pedidoPago.getMdOrder() : pedidoPago.getCredibancoOrderId();
+                        String mdOrder = pedidoPago.getMdOrder() != null ? pedidoPago.getMdOrder()
+                                : pedidoPago.getCredibancoOrderId();
                         if (bindingId != null && !bindingId.isBlank()
                                 && (mdOrder == null || !bindingId.equalsIgnoreCase(mdOrder))
                                 && pedidoPago.getUsuarioId() != null) {
                             try {
-                                log.info("Guardando tarjeta vinculada confirmada por Credibanco para usuario {}, bindingId {}",
+                                log.info(
+                                        "Guardando tarjeta vinculada confirmada por Credibanco para usuario {}, bindingId {}",
                                         pedidoPago.getUsuarioId(), bindingId);
                                 saveCardBinding(SaveCardBindingRequest.builder()
                                         .bindingId(bindingId)
-                                        .tarjetaEnmascarada(statusResp.getMaskedPan() != null ? statusResp.getMaskedPan() : "**** **** **** ****")
-                                        .franquicia(statusResp.getPaymentSystem() != null ? statusResp.getPaymentSystem() : "TARJETA")
+                                        .tarjetaEnmascarada(
+                                                statusResp.getMaskedPan() != null ? statusResp.getMaskedPan()
+                                                        : "**** **** **** ****")
+                                        .franquicia(
+                                                statusResp.getPaymentSystem() != null ? statusResp.getPaymentSystem()
+                                                        : "TARJETA")
                                         .expiracion(statusResp.getExpiration())
                                         .titular(statusResp.getCardholderName())
                                         .esPredeterminada(true)
@@ -317,14 +390,15 @@ public class PaymentServiceImpl implements PaymentService {
                             }
                         }
                     } else if (statusResp.getOrderStatus() != null && statusResp.getOrderStatus() == 6) {
-                        pedidoPago.setEstadoId(3); // 3: Rechazado
+                        pedidoPago.setEstadoId(PedidoPago.ESTADO_RECHAZADO); // 24: Rechazado (Flujo 5)
                         pedidoPagoRepository.save(pedidoPago);
                     } else {
                         pedidoPagoRepository.save(pedidoPago);
                     }
                 }
             } catch (Exception e) {
-                log.warn("No se pudo consultar estado extendido en Credibanco para {}: {}", pedidoPago.getReferenciaPago(), e.getMessage());
+                log.warn("No se pudo consultar estado extendido en Credibanco para {}: {}",
+                        pedidoPago.getReferenciaPago(), e.getMessage());
             }
         }
 
@@ -332,7 +406,7 @@ public class PaymentServiceImpl implements PaymentService {
                 .pedidoPagoId(pedidoPago.getId())
                 .pedidoId(pedidoPago.getPedidoId())
                 .referenciaPago(pedidoPago.getReferenciaPago())
-                .credibancoOrderId(pedidoPago.getCredibancoOrderId())
+                .orderId(pedidoPago.getCredibancoOrderId())
                 .mdOrder(pedidoPago.getMdOrder())
                 .monto(pedidoPago.getMonto())
                 .moneda(pedidoPago.getMoneda())
@@ -349,7 +423,8 @@ public class PaymentServiceImpl implements PaymentService {
 
     @Override
     @Transactional
-    public void processCredibancoCallback(String mdOrder, String orderNumber, String operation, Integer status, String checksum, String signAlias) {
+    public void processCredibancoCallback(String mdOrder, String orderNumber, String operation, Integer status,
+            String checksum, String signAlias) {
         log.info("Procesando callback de Credibanco: mdOrder={}, orderNumber={}, operation={}, status={}",
                 mdOrder, orderNumber, operation, status);
 
@@ -367,7 +442,8 @@ public class PaymentServiceImpl implements PaymentService {
                     orderNumber != null ? orderNumber : "",
                     status != null ? String.valueOf(status) : "");
             boolean validSignature = hmacSignatureService.verifySignature(secretKey, dataToVerify, checksum)
-                    || hmacSignatureService.verifySignature(secretKey, (mdOrder != null ? mdOrder : "") + (orderNumber != null ? orderNumber : ""), checksum);
+                    || hmacSignatureService.verifySignature(secretKey,
+                            (mdOrder != null ? mdOrder : "") + (orderNumber != null ? orderNumber : ""), checksum);
             if (!validSignature) {
                 log.error("Firma HMAC inválida en webhook de Credibanco. checksum={}", checksum);
                 throw new PaymentException("Firma HMAC inválida en callback de Credibanco");
@@ -396,10 +472,12 @@ public class PaymentServiceImpl implements PaymentService {
             return;
         }
 
-        // 4. Decidir estado ÚNICAMENTE con la consulta a Credibanco (getOrderStatusExtended), nunca con parámetros del callback
+        // 4. Decidir estado ÚNICAMENTE con la consulta a Credibanco
+        // (getOrderStatusExtended), nunca con parámetros del callback
         if ("deposited".equalsIgnoreCase(operation) || "approved".equalsIgnoreCase(operation)) {
             try {
-                PaymentStatusResponse statusResponse = syncAndMapPaymentStatus(pedidoPago, pedidoPago.getArenaId(), pedidoPago.getUsuarioId());
+                PaymentStatusResponse statusResponse = syncAndMapPaymentStatus(pedidoPago, pedidoPago.getArenaId(),
+                        pedidoPago.getUsuarioId());
                 if (statusResponse == null || !Integer.valueOf(2).equals(pedidoPago.getEstadoId())) {
                     log.warn("Credibanco no confirmó aprobación de la orden {} en consulta directa. Estado={}",
                             pedidoPago.getReferenciaPago(), pedidoPago.getEstadoId());
@@ -409,13 +487,15 @@ public class PaymentServiceImpl implements PaymentService {
                 throw new PaymentException("Error validando estado de pago con Credibanco: " + ex.getMessage());
             }
         } else if ("reversed".equalsIgnoreCase(operation)) {
-            pedidoPago.setEstadoId(4); // Reversado
+            pedidoPago.setEstadoId(PedidoPago.ESTADO_REVERSADO); // 25: Reversado (Flujo 5)
             pedidoPagoRepository.save(pedidoPago);
-            orderingClient.updateOrderStatus(pedidoPago.getPedidoId(), 4, "Pago reversado via webhook Credibanco", null);
+            orderingClient.updateOrderStatus(pedidoPago.getPedidoId(), PedidoPago.ESTADO_REVERSADO,
+                    "Pago reversado via webhook Credibanco", null);
         } else if ("refunded".equalsIgnoreCase(operation)) {
-            pedidoPago.setEstadoId(5); // Anulado/Reembolsado
+            pedidoPago.setEstadoId(PedidoPago.ESTADO_ANULADO); // 26: Anulado/Reembolsado (Flujo 5)
             pedidoPagoRepository.save(pedidoPago);
-            orderingClient.updateOrderStatus(pedidoPago.getPedidoId(), 5, "Pago anulado/reembolsado via webhook Credibanco", null);
+            orderingClient.updateOrderStatus(pedidoPago.getPedidoId(), PedidoPago.ESTADO_ANULADO,
+                    "Pago anulado/reembolsado via webhook Credibanco", null);
         }
     }
 
@@ -424,11 +504,14 @@ public class PaymentServiceImpl implements PaymentService {
     }
 
     private void onPaymentApproved(PedidoPago pedidoPago, String detailMessage, String autorizacion, String terminal) {
-        if (Integer.valueOf(2).equals(pedidoPago.getEstadoId())) {
-            log.info("El pago con ID {} ya se encontraba en estado Aprobado. Omitiendo reprocesamiento.", pedidoPago.getId());
+        boolean alreadyApproved = Integer.valueOf(PedidoPago.ESTADO_APROBADO).equals(pedidoPago.getEstadoId())
+                || Integer.valueOf(2).equals(pedidoPago.getEstadoId());
+        if (alreadyApproved) {
+            log.info("El pago con ID {} ya se encontraba en estado Aprobado. Omitiendo reprocesamiento.",
+                    pedidoPago.getId());
             return;
         }
-        pedidoPago.setEstadoId(2); // 2: Aprobado / Deposited
+        pedidoPago.setEstadoId(PedidoPago.ESTADO_APROBADO); // 23: Aprobado (Flujo 5)
         pedidoPago.setFechaPago(LocalDateTime.now());
         if (autorizacion != null && !autorizacion.isBlank()) {
             pedidoPago.setAuthCode(autorizacion);
@@ -477,8 +560,7 @@ public class PaymentServiceImpl implements PaymentService {
                                 pedidoPago.getUsuarioId() != null ? pedidoPago.getUsuarioId() : gpu.getUsuarioId(),
                                 pedidoPago.getPedidoId(),
                                 gp.getNombre(),
-                                gp.getValorTotal()
-                        );
+                                gp.getValorTotal());
                     }
                 } else {
                     log.info("Aporte a la vaca registrado para pedido {}. Total recaudado: {}, Saldo pendiente: {}",
@@ -503,6 +585,12 @@ public class PaymentServiceImpl implements PaymentService {
         PedidoPago pedidoPago = pedidoPagoRepository.findById(request.getPedidoPagoId())
                 .orElseThrow(() -> new ResourceNotFoundException("PedidoPago no encontrado"));
 
+        if (Integer.valueOf(IntegrationAuditService.SERVICIO_MERCADOPAGO).equals(pedidoPago.getPasarelaId())
+                || (pedidoPago.getMpOrderId() != null && !Integer.valueOf(IntegrationAuditService.SERVICIO_CREDIBANCO)
+                        .equals(pedidoPago.getPasarelaId()))) {
+            return mercadoPagoService.refundOrder(request, arenaId, usuarioId);
+        }
+
         // H-05: Validación estricta de autorización y reglas de negocio para reembolsos
         if (!Integer.valueOf(2).equals(pedidoPago.getEstadoId())) {
             throw new PaymentException("Solo se pueden reembolsar pagos en estado Aprobado");
@@ -513,8 +601,10 @@ public class PaymentServiceImpl implements PaymentService {
         }
 
         java.math.BigDecimal montoReembolso = request.getMonto() != null ? request.getMonto() : pedidoPago.getMonto();
-        if (montoReembolso.compareTo(java.math.BigDecimal.ZERO) <= 0 || montoReembolso.compareTo(pedidoPago.getMonto()) > 0) {
-            throw new PaymentException("El monto a reembolsar (" + montoReembolso + ") debe ser mayor a cero y no puede exceder el monto pagado (" + pedidoPago.getMonto() + ")");
+        if (montoReembolso.compareTo(java.math.BigDecimal.ZERO) <= 0
+                || montoReembolso.compareTo(pedidoPago.getMonto()) > 0) {
+            throw new PaymentException("El monto a reembolsar (" + montoReembolso
+                    + ") debe ser mayor a cero y no puede exceder el monto pagado (" + pedidoPago.getMonto() + ")");
         }
 
         if (pedidoPago.getCredibancoOrderId() == null) {
@@ -525,18 +615,18 @@ public class PaymentServiceImpl implements PaymentService {
                 pedidoPago.getCredibancoOrderId(),
                 request.getMonto() != null ? request.getMonto() : pedidoPago.getMonto(),
                 arenaId,
-                usuarioId
-        );
+                usuarioId);
 
         if (refundResp.isSuccessful()) {
-            pedidoPago.setEstadoId(5); // Reembolsado / Anulado
+            pedidoPago.setEstadoId(PedidoPago.ESTADO_REVERSADO); // 25: Reembolsado / Reversado (Flujo 5)
             pedidoPagoRepository.save(pedidoPago);
 
-            orderingClient.updateOrderStatus(pedidoPago.getPedidoId(), 5, "Reembolso procesado exitosamente: " + request.getMotivo(), null);
+            orderingClient.updateOrderStatus(pedidoPago.getPedidoId(), PedidoPago.ESTADO_REVERSADO,
+                    "Reembolso procesado exitosamente: " + request.getMotivo(), null);
 
             return RefundResponse.builder()
                     .pedidoPagoId(pedidoPago.getId())
-                    .credibancoOrderId(pedidoPago.getCredibancoOrderId())
+                    .orderId(pedidoPago.getCredibancoOrderId())
                     .montoReembolsado(request.getMonto() != null ? request.getMonto() : pedidoPago.getMonto())
                     .exito(true)
                     .mensaje("Reembolso procesado exitosamente en Credibanco")
@@ -544,7 +634,7 @@ public class PaymentServiceImpl implements PaymentService {
         } else {
             return RefundResponse.builder()
                     .pedidoPagoId(pedidoPago.getId())
-                    .credibancoOrderId(pedidoPago.getCredibancoOrderId())
+                    .orderId(pedidoPago.getCredibancoOrderId())
                     .exito(false)
                     .mensaje("Error al reembolsar en Credibanco: " + refundResp.getErrorMessage())
                     .build();
@@ -558,8 +648,7 @@ public class PaymentServiceImpl implements PaymentService {
                 request.getCvc(),
                 request.getExpiry(),
                 arenaId,
-                usuarioId
-        );
+                usuarioId);
 
         return VerifyCardResponse.builder()
                 .valida(verifyResp.isSuccessful())
@@ -567,13 +656,15 @@ public class PaymentServiceImpl implements PaymentService {
                 .authCode(verifyResp.getAuthCode())
                 .actionCode(verifyResp.getActionCode())
                 .actionCodeDescription(verifyResp.getActionCodeDescription())
-                .mensaje(verifyResp.getUserMessage() != null ? verifyResp.getUserMessage() : verifyResp.getErrorMessage())
+                .mensaje(verifyResp.getUserMessage() != null ? verifyResp.getUserMessage()
+                        : verifyResp.getErrorMessage())
                 .build();
     }
 
     @Override
     @Transactional
-    public PaymentTokenResponse payWithToken(PayWithTokenRequest request, String arenaId, Long usuarioId, String ipCliente) {
+    public PaymentTokenResponse payWithToken(PayWithTokenRequest request, String arenaId, Long usuarioId,
+            String ipCliente) {
         log.info("Iniciando pago con tarjeta tokenizada para usuario {}, pedido {}, monto {}",
                 usuarioId, request.getPedidoId(), request.getMonto());
 
@@ -591,21 +682,26 @@ public class PaymentServiceImpl implements PaymentService {
         String realBindingId = bindingId;
         String tarjetaEnmascarada = null;
         if (tarjetaCliente != null) {
-            realBindingId = tarjetaCliente.getTarjetaId() != null ? tarjetaCliente.getTarjetaId() : tarjetaCliente.getClientePago().getBindingId();
+            realBindingId = tarjetaCliente.getTarjetaId() != null ? tarjetaCliente.getTarjetaId()
+                    : tarjetaCliente.getClientePago().getBindingId();
             tarjetaEnmascarada = tarjetaCliente.getTarjetaEnmascarada();
         } else {
-            ClientePago cp = clientePagoRepository.findFirstByArenaIdAndArenaUsuarioIdAndBindingIdOrderByIdDesc(arenaId, usuarioId, bindingId)
-                    .or(() -> clientePagoRepository.findFirstByArenaUsuarioIdAndBindingIdOrderByIdDesc(usuarioId, bindingId))
+            ClientePago cp = clientePagoRepository
+                    .findFirstByArenaIdAndArenaUsuarioIdAndBindingIdOrderByIdDesc(arenaId, usuarioId, bindingId)
+                    .or(() -> clientePagoRepository.findFirstByArenaUsuarioIdAndBindingIdOrderByIdDesc(usuarioId,
+                            bindingId))
                     .orElse(null);
             if (cp != null) {
                 tarjetaEnmascarada = cp.getTarjetaEnmascarada();
             } else {
-                throw new ResourceNotFoundException("Tarjeta vinculada no encontrada o no pertenece al usuario autenticado");
+                throw new ResourceNotFoundException(
+                        "Tarjeta vinculada no encontrada o no pertenece al usuario autenticado");
             }
         }
 
         // 2. Generar referencia única de transacción
-        String referenciaPago = "PAY-TOK-" + System.currentTimeMillis() + "-" + UUID.randomUUID().toString().substring(0, 6).toUpperCase();
+        String referenciaPago = "PAY-TOK-" + System.currentTimeMillis() + "-"
+                + UUID.randomUUID().toString().substring(0, 6).toUpperCase();
 
         TipoPago tipoPago = tipoPagoRepository.findById(request.getTipoPagoId() != null ? request.getTipoPagoId() : 1)
                 .orElseGet(() -> tipoPagoRepository.findById(1).orElse(null));
@@ -617,10 +713,11 @@ public class PaymentServiceImpl implements PaymentService {
                 : null;
 
         // 3. Crear registro inicial en base de datos
+        Long effectiveUsuarioId = (usuarioId != null && usuarioId > 0) ? usuarioId : 0L;
         PedidoPago pedidoPago = PedidoPago.builder()
                 .pedidoId(request.getPedidoId())
                 .arenaId(arenaId)
-                .usuarioId(usuarioId)
+                .usuarioId(effectiveUsuarioId)
                 .tipoPago(tipoPago)
                 .medioPago(medioPago)
                 .grupoPagoUsuario(grupoPagoUsuario)
@@ -630,24 +727,28 @@ public class PaymentServiceImpl implements PaymentService {
                 .referenciaPago(referenciaPago)
                 .ipCliente(ipCliente)
                 .estadoId(1) // 1: Iniciado
-                .creacionUsuario(usuarioId)
+                .creacionUsuario(effectiveUsuarioId)
                 .build();
         pedidoPago = pedidoPagoRepository.save(pedidoPago);
 
         String returnUrl = (request.getReturnUrl() != null && !request.getReturnUrl().isBlank())
                 ? request.getReturnUrl()
-                : (credibancoProperties.getDefaultReturnUrl() != null && !credibancoProperties.getDefaultReturnUrl().isBlank()
-                    ? credibancoProperties.getDefaultReturnUrl()
-                    : "http://localhost:3000/checkout/payment-return");
+                : (credibancoProperties.getDefaultReturnUrl() != null
+                        && !credibancoProperties.getDefaultReturnUrl().isBlank()
+                                ? credibancoProperties.getDefaultReturnUrl()
+                                : "http://localhost:3000/checkout/payment-return");
 
         String failUrl = (request.getFailUrl() != null && !request.getFailUrl().isBlank())
                 ? request.getFailUrl()
-                : (credibancoProperties.getDefaultFailUrl() != null && !credibancoProperties.getDefaultFailUrl().isBlank()
-                    ? credibancoProperties.getDefaultFailUrl()
-                    : "http://localhost:3000/checkout/payment-return?status=failed");
+                : (credibancoProperties.getDefaultFailUrl() != null
+                        && !credibancoProperties.getDefaultFailUrl().isBlank()
+                                ? credibancoProperties.getDefaultFailUrl()
+                                : "http://localhost:3000/checkout/payment-return?status=failed");
 
-        // 4. Paso A: Registrar orden en pasarela Credibanco con soporte para AUTO_PAYMENT
-        String description = request.getDescription() != null ? request.getDescription() : "Pago con tarjeta guardada Pedido #" + request.getPedidoId();
+        // 4. Paso A: Registrar orden en pasarela Credibanco con soporte para
+        // AUTO_PAYMENT
+        String description = request.getDescription() != null ? request.getDescription()
+                : "Pago con tarjeta guardada Pedido #" + request.getPedidoId();
         CredibancoRegisterResponse regResp = credibancoClient.registerOrder(
                 referenciaPago,
                 request.getMonto(),
@@ -659,11 +760,10 @@ public class PaymentServiceImpl implements PaymentService {
                 null,
                 "AUTO_PAYMENT",
                 arenaId,
-                usuarioId
-        );
+                usuarioId);
 
         if (!regResp.isSuccessful()) {
-            pedidoPago.setEstadoId(3); // 3: Rechazado
+            pedidoPago.setEstadoId(PedidoPago.ESTADO_RECHAZADO); // 24: Rechazado (Flujo 5)
             pedidoPago.setErrorCode(regResp.getErrorCode());
             pedidoPago.setErrorMessage(regResp.getErrorMessage());
             pedidoPagoRepository.save(pedidoPago);
@@ -686,7 +786,8 @@ public class PaymentServiceImpl implements PaymentService {
         pedidoPago.setFormUrl(regResp.getFormUrl());
         pedidoPagoRepository.save(pedidoPago);
 
-        // 5. Paso B: Procesar cobro con token directamente en segundo plano (paymentOrderBinding.do)
+        // 5. Paso B: Procesar cobro con token directamente en segundo plano
+        // (paymentOrderBinding.do)
         CredibancoPaymentOrderResponse payResp = null;
         try {
             payResp = credibancoClient.paymentOrderBinding(
@@ -695,15 +796,16 @@ public class PaymentServiceImpl implements PaymentService {
                     request.getCvc(),
                     ipCliente,
                     arenaId,
-                    usuarioId
-            );
+                    usuarioId);
         } catch (Exception ex) {
             log.warn("Excepción al ejecutar paymentOrderBinding con bindingId {}: {}", realBindingId, ex.getMessage());
         }
 
         if (payResp != null && payResp.isSuccessful()) {
-            // Sincronizar estado real extendido contra Credibanco (getOrderStatusExtended.do)
-            // para obtener el código de autorización real (approvalCode) y terminal (terminalId) legítimos
+            // Sincronizar estado real extendido contra Credibanco
+            // (getOrderStatusExtended.do)
+            // para obtener el código de autorización real (approvalCode) y terminal
+            // (terminalId) legítimos
             try {
                 syncAndMapPaymentStatus(pedidoPago, arenaId, usuarioId);
             } catch (Exception ex) {
@@ -711,7 +813,9 @@ public class PaymentServiceImpl implements PaymentService {
             }
 
             if (!Integer.valueOf(2).equals(pedidoPago.getEstadoId())) {
-                onPaymentApproved(pedidoPago, "Pago One-Click con tarjeta tokenizada aprobado (Auth: " + payResp.getRbsOrderId() + ")", payResp.getRbsOrderId(), null);
+                onPaymentApproved(pedidoPago,
+                        "Pago One-Click con tarjeta tokenizada aprobado (Auth: " + payResp.getRbsOrderId() + ")",
+                        payResp.getRbsOrderId(), null);
             }
 
             return PaymentTokenResponse.builder()
@@ -745,7 +849,8 @@ public class PaymentServiceImpl implements PaymentService {
                     .build();
         }
 
-        // Si paymentOrderBinding no completó (por ejemplo, si el token es antiguo o no existe en la bóveda de Credibanco),
+        // Si paymentOrderBinding no completó (por ejemplo, si el token es antiguo o no
+        // existe en la bóveda de Credibanco),
         // fallback: redirigir al formulario seguro de Credibanco (formUrl)
         log.warn("paymentOrderBinding no completó débito directo (error: {} - {}). Redirigiendo a formulario seguro...",
                 payResp != null ? payResp.getErrorCode() : "NULL",
@@ -768,10 +873,12 @@ public class PaymentServiceImpl implements PaymentService {
 
     @Override
     @Transactional
-    public TarjetaGuardadaResponse tokenizeCard(TokenizarTarjetaRequest request, String arenaId, Long usuarioId, String ipCliente) {
+    public TarjetaGuardadaResponse tokenizeCard(TokenizarTarjetaRequest request, String arenaId, Long usuarioId,
+            String ipCliente) {
         log.info("Iniciando flujo de tokenización directa con Credibanco para usuario {}", usuarioId);
 
-        // 1. Validar datos de tarjeta (Luhn, vencimiento, formato de titular 'NOMBRE APELLIDO')
+        // 1. Validar datos de tarjeta (Luhn, vencimiento, formato de titular 'NOMBRE
+        // APELLIDO')
         validateCardDetails(request);
 
         // 2. Normalizar datos según especificaciones de Credibanco (Sección 9.2.5)
@@ -781,14 +888,17 @@ public class PaymentServiceImpl implements PaymentService {
                 : request.getAnioVencimiento();
         String titular = request.getNombreTitular().trim().toUpperCase();
 
-        // 3. Registrar orden de verificación en Credibanco (register.do con features=VERIFY, amount=0, clientId=usuarioId)
+        // 3. Registrar orden de verificación en Credibanco (register.do con
+        // features=VERIFY, amount=0, clientId=usuarioId)
         String orderNumber = "TOK-" + usuarioId + "-" + System.currentTimeMillis();
-        String returnUrl = (credibancoProperties.getDefaultReturnUrl() != null && !credibancoProperties.getDefaultReturnUrl().isBlank())
-                ? credibancoProperties.getDefaultReturnUrl()
-                : "http://localhost:3000/checkout/payment-return";
-        String failUrl = (credibancoProperties.getDefaultFailUrl() != null && !credibancoProperties.getDefaultFailUrl().isBlank())
-                ? credibancoProperties.getDefaultFailUrl()
-                : "http://localhost:3000/checkout/payment-return?status=failed";
+        String returnUrl = (credibancoProperties.getDefaultReturnUrl() != null
+                && !credibancoProperties.getDefaultReturnUrl().isBlank())
+                        ? credibancoProperties.getDefaultReturnUrl()
+                        : "http://localhost:3000/checkout/payment-return";
+        String failUrl = (credibancoProperties.getDefaultFailUrl() != null
+                && !credibancoProperties.getDefaultFailUrl().isBlank())
+                        ? credibancoProperties.getDefaultFailUrl()
+                        : "http://localhost:3000/checkout/payment-return?status=failed";
 
         CredibancoRegisterResponse regResp = credibancoClient.registerOrder(
                 orderNumber,
@@ -800,18 +910,19 @@ public class PaymentServiceImpl implements PaymentService {
                 resolverClientId(arenaId, usuarioId),
                 "VERIFY",
                 arenaId,
-                usuarioId
-        );
+                usuarioId);
 
         if (regResp == null || !regResp.isSuccessful()) {
             String errorMsg = regResp != null ? regResp.getErrorMessage() : "Error de comunicación con Credibanco";
             String errCode = regResp != null ? regResp.getErrorCode() : "REGISTER_ERROR";
 
-            // Si Credibanco UAT no tiene activado el permiso VERIFY para el comercio de prueba (errorCode 13):
+            // Si Credibanco UAT no tiene activado el permiso VERIFY para el comercio de
+            // prueba (errorCode 13):
             if ("13".equals(errCode) || (errorMsg != null && errorMsg.toLowerCase().contains("permiso"))) {
                 throw new CredibancoApiException(errCode,
-                        "El comercio no tiene habilitado el permiso VERIFY en Credibanco para verificación de tarjeta con monto cero ($0). " +
-                        "La tarjeta debe registrarse durante la primera compra del usuario marcando 'Guardar tarjeta para futuras compras'.");
+                        "El comercio no tiene habilitado el permiso VERIFY en Credibanco para verificación de tarjeta con monto cero ($0). "
+                                +
+                                "La tarjeta debe registrarse durante la primera compra del usuario marcando 'Guardar tarjeta para futuras compras'.");
             }
 
             throw new CredibancoApiException(errCode, "Credibanco rechazó el registro de tokenización: " + errorMsg);
@@ -819,7 +930,8 @@ public class PaymentServiceImpl implements PaymentService {
 
         String mdOrder = regResp.getOrderId();
 
-        // 4. Ejecutar verificación y Card on File en Credibanco (paymentorder.do con tii=U)
+        // 4. Ejecutar verificación y Card on File en Credibanco (paymentorder.do con
+        // tii=U)
         CredibancoPaymentOrderResponse payResp = credibancoClient.paymentOrder(
                 mdOrder,
                 request.getPan(),
@@ -831,8 +943,7 @@ public class PaymentServiceImpl implements PaymentService {
                 request.getEmail(),
                 ipCliente,
                 arenaId,
-                usuarioId
-        );
+                usuarioId);
 
         if (payResp != null && payResp.is3dsRequired()) {
             return TarjetaGuardadaResponse.builder()
@@ -847,10 +958,14 @@ public class PaymentServiceImpl implements PaymentService {
             String error = payResp != null ? payResp.getErrorMessage() : "Transacción rechazada por el procesador";
             String code = payResp != null ? payResp.getErrorCode() : "PAYMENT_ORDER_ERROR";
 
-            // Si Credibanco UAT restringe PAN de prueba en paymentorder.do del lado servidor (errorCode 1):
+            // Si Credibanco UAT restringe PAN de prueba en paymentorder.do del lado
+            // servidor (errorCode 1):
             if ("1".equals(code) || (error != null && error.toLowerCase().contains("pan no es"))) {
-                log.warn("Credibanco UAT restringió PAN en servidor. Creando binding seguro para ambiente de pruebas del usuario {}", usuarioId);
-                String fallbackBinding = "binding_" + System.currentTimeMillis() + "_" + request.getPan().substring(request.getPan().length() - 4);
+                log.warn(
+                        "Credibanco UAT restringió PAN en servidor. Creando binding seguro para ambiente de pruebas del usuario {}",
+                        usuarioId);
+                String fallbackBinding = "binding_" + System.currentTimeMillis() + "_"
+                        + request.getPan().substring(request.getPan().length() - 4);
                 String maskedPan = maskPan(request.getPan());
                 String franquicia = detectFranquicia(request.getPan());
                 String expiracion = normalizedMonth + "/" + normalizedYear.substring(2);
@@ -873,22 +988,27 @@ public class PaymentServiceImpl implements PaymentService {
             throw new CredibancoApiException(code, "Credibanco no aprobó la tarjeta: " + error);
         }
 
-        // 5. Consultar estado extendido en Credibanco (getOrderStatusExtended.do) para obtener bindingId y datos enmascarados
-        CredibancoStatusResponse statusResp = credibancoClient.getOrderStatusExtended(mdOrder, orderNumber, arenaId, usuarioId);
+        // 5. Consultar estado extendido en Credibanco (getOrderStatusExtended.do) para
+        // obtener bindingId y datos enmascarados
+        CredibancoStatusResponse statusResp = credibancoClient.getOrderStatusExtended(mdOrder, orderNumber, arenaId,
+                usuarioId);
 
         String bindingId = statusResp != null ? statusResp.getBindingId() : null;
 
         if (bindingId == null || bindingId.isBlank()) {
             if (statusResp != null && statusResp.getMdOrder() != null && !statusResp.getMdOrder().isBlank()) {
                 bindingId = statusResp.getMdOrder();
-            } else if (statusResp != null && statusResp.getPaymentNetRefNum() != null && !statusResp.getPaymentNetRefNum().isBlank()) {
+            } else if (statusResp != null && statusResp.getPaymentNetRefNum() != null
+                    && !statusResp.getPaymentNetRefNum().isBlank()) {
                 bindingId = statusResp.getPaymentNetRefNum();
             } else {
-                bindingId = "bind_" + System.currentTimeMillis() + "_" + request.getPan().substring(request.getPan().length() - 4);
+                bindingId = "bind_" + System.currentTimeMillis() + "_"
+                        + request.getPan().substring(request.getPan().length() - 4);
             }
         }
 
-        // 6. Persistir tarjeta con el bindingId legítimo de Credibanco y datos enmascarados (PCI-DSS)
+        // 6. Persistir tarjeta con el bindingId legítimo de Credibanco y datos
+        // enmascarados (PCI-DSS)
         String maskedPan = (statusResp != null && statusResp.getMaskedPan() != null)
                 ? statusResp.getMaskedPan()
                 : maskPan(request.getPan());
@@ -914,17 +1034,21 @@ public class PaymentServiceImpl implements PaymentService {
 
     @Override
     @Transactional
-    public IniciarTokenizacionResponse initiateCardTokenization(IniciarTokenizacionRequest request, String arenaId, Long usuarioId) {
+    public IniciarTokenizacionResponse initiateCardTokenization(IniciarTokenizacionRequest request, String arenaId,
+            Long usuarioId) {
         log.info("Iniciando flujo de tokenización vía Formulario Seguro Credibanco para usuario {}", usuarioId);
 
         String orderNumber = "TOK-FORM-" + usuarioId + "-" + System.currentTimeMillis();
         String returnUrl = (request.getReturnUrl() != null && !request.getReturnUrl().isBlank())
                 ? request.getReturnUrl()
-                : (credibancoProperties.getDefaultReturnUrl() != null ? credibancoProperties.getDefaultReturnUrl() : "http://localhost:3000/checkout/payment-return");
+                : (credibancoProperties.getDefaultReturnUrl() != null ? credibancoProperties.getDefaultReturnUrl()
+                        : "http://localhost:3000/checkout/payment-return");
         String failUrl = (request.getFailUrl() != null && !request.getFailUrl().isBlank())
                 ? request.getFailUrl()
-                : (credibancoProperties.getDefaultFailUrl() != null ? credibancoProperties.getDefaultFailUrl() : "http://localhost:3000/checkout/payment-return?status=failed");
-        String desc = request.getDescripcion() != null ? request.getDescripcion() : "Tokenizacion Segura Tarjeta #" + usuarioId;
+                : (credibancoProperties.getDefaultFailUrl() != null ? credibancoProperties.getDefaultFailUrl()
+                        : "http://localhost:3000/checkout/payment-return?status=failed");
+        String desc = request.getDescripcion() != null ? request.getDescripcion()
+                : "Tokenizacion Segura Tarjeta #" + usuarioId;
 
         CredibancoRegisterResponse regResp = credibancoClient.registerOrder(
                 orderNumber,
@@ -936,37 +1060,40 @@ public class PaymentServiceImpl implements PaymentService {
                 String.valueOf(usuarioId),
                 "VERIFY",
                 arenaId,
-                usuarioId
-        );
+                usuarioId);
 
         if (regResp == null || !regResp.isSuccessful()) {
             String errorMsg = regResp != null ? regResp.getErrorMessage() : "Error de comunicación con Credibanco";
             String errCode = regResp != null ? regResp.getErrorCode() : "REGISTER_ERROR";
-            throw new CredibancoApiException(errCode, "Error al registrar orden de tokenización en Credibanco: " + errorMsg);
+            throw new CredibancoApiException(errCode,
+                    "Error al registrar orden de tokenización en Credibanco: " + errorMsg);
         }
 
         return IniciarTokenizacionResponse.builder()
                 .credibancoOrderId(regResp.getOrderId())
                 .referencia(orderNumber)
                 .formUrl(regResp.getFormUrl())
-                .mensaje("Orden de verificación registrada en Credibanco. Redirigir tarjetahabiente a formUrl para ingresar la tarjeta.")
+                .mensaje(
+                        "Orden de verificación registrada en Credibanco. Redirigir tarjetahabiente a formUrl para ingresar la tarjeta.")
                 .build();
     }
 
     @Override
     @Transactional
-    public TarjetaGuardadaResponse confirmCardTokenization(ConfirmarTokenizacionRequest request, String arenaId, Long usuarioId) {
-        log.info("Confirmando tokenización para orden Credibanco {} y usuario {}", request.getCredibancoOrderId(), usuarioId);
+    public TarjetaGuardadaResponse confirmCardTokenization(ConfirmarTokenizacionRequest request, String arenaId,
+            Long usuarioId) {
+        log.info("Confirmando tokenización para orden Credibanco {} y usuario {}", request.getCredibancoOrderId(),
+                usuarioId);
 
         CredibancoStatusResponse statusResp = credibancoClient.getOrderStatusExtended(
                 request.getCredibancoOrderId(),
                 null,
                 arenaId,
-                usuarioId
-        );
+                usuarioId);
 
         if (statusResp == null || !statusResp.isVerifiedOrApproved()) {
-            String errorMsg = statusResp != null ? statusResp.getErrorMessage() : "No se pudo obtener estado de la orden";
+            String errorMsg = statusResp != null ? statusResp.getErrorMessage()
+                    : "No se pudo obtener estado de la orden";
             throw new PaymentException("La verificación de la tarjeta no fue aprobada por Credibanco: " + errorMsg);
         }
 
@@ -978,15 +1105,18 @@ public class PaymentServiceImpl implements PaymentService {
                 bindingId = statusResp.getPaymentNetRefNum();
             } else if (statusResp.getMaskedPan() != null) {
                 String digits = statusResp.getMaskedPan().replaceAll("[^0-9]", "");
-                bindingId = "bind_" + (digits.length() >= 4 ? digits.substring(digits.length() - 4) : "card") + "_" + usuarioId;
+                bindingId = "bind_" + (digits.length() >= 4 ? digits.substring(digits.length() - 4) : "card") + "_"
+                        + usuarioId;
             } else {
-                throw new PaymentException("Credibanco no devolvió un token ni datos de tarjeta asociados a esta orden");
+                throw new PaymentException(
+                        "Credibanco no devolvió un token ni datos de tarjeta asociados a esta orden");
             }
         }
 
         SaveCardBindingRequest saveReq = SaveCardBindingRequest.builder()
                 .bindingId(bindingId)
-                .tarjetaEnmascarada(statusResp.getMaskedPan() != null ? statusResp.getMaskedPan() : "**** **** **** ****")
+                .tarjetaEnmascarada(
+                        statusResp.getMaskedPan() != null ? statusResp.getMaskedPan() : "**** **** **** ****")
                 .franquicia(statusResp.getPaymentSystem() != null ? statusResp.getPaymentSystem() : "TARJETA")
                 .expiracion(statusResp.getExpiration())
                 .titular(statusResp.getCardholderName())
@@ -1005,7 +1135,8 @@ public class PaymentServiceImpl implements PaymentService {
 
         String titular = request.getNombreTitular() != null ? request.getNombreTitular().trim() : "";
         if (!titular.contains(" ")) {
-            throw new BadRequestException("El nombre del titular debe contener Nombre y Apellido separados por espacio según requerimiento de Credibanco (Ej: 'JUAN PEREZ')");
+            throw new BadRequestException(
+                    "El nombre del titular debe contener Nombre y Apellido separados por espacio según requerimiento de Credibanco (Ej: 'JUAN PEREZ')");
         }
 
         try {
@@ -1047,16 +1178,22 @@ public class PaymentServiceImpl implements PaymentService {
     }
 
     private String maskPan(String pan) {
-        if (pan == null || pan.length() < 10) return "**** **** **** ****";
+        if (pan == null || pan.length() < 10)
+            return "**** **** **** ****";
         return pan.substring(0, 6) + "******" + pan.substring(pan.length() - 4);
     }
 
     private String detectFranquicia(String pan) {
-        if (pan == null || pan.isBlank()) return "TARJETA";
-        if (pan.startsWith("4")) return "VISA";
-        if (pan.matches("^(5[1-5]|2[2-7]).*")) return "MASTERCARD";
-        if (pan.matches("^3[47].*")) return "AMEX";
-        if (pan.matches("^3(?:0[0-5]|[68][0-9]).*")) return "DINERS";
+        if (pan == null || pan.isBlank())
+            return "TARJETA";
+        if (pan.startsWith("4"))
+            return "VISA";
+        if (pan.matches("^(5[1-5]|2[2-7]).*"))
+            return "MASTERCARD";
+        if (pan.matches("^3[47].*"))
+            return "AMEX";
+        if (pan.matches("^3(?:0[0-5]|[68][0-9]).*"))
+            return "DINERS";
         return "TARJETA";
     }
 
@@ -1071,18 +1208,22 @@ public class PaymentServiceImpl implements PaymentService {
             return deduplicateCards(tarjetas).stream().map(this::mapToTarjetaResponse).toList();
         }
 
-        // Fallback: buscar tarjetas sin arenaId asignado (registros legacy) pertenecientes al usuario
+        // Fallback: buscar tarjetas sin arenaId asignado (registros legacy)
+        // pertenecientes al usuario
         tarjetas = tarjetaClientePagoRepository.findByClientePagoArenaUsuarioIdAndEstadoId(usuarioId, 1)
                 .stream()
-                .filter(t -> t.getClientePago() == null || t.getClientePago().getArenaId() == null || safeArena.equalsIgnoreCase(t.getClientePago().getArenaId()))
+                .filter(t -> t.getClientePago() == null || t.getClientePago().getArenaId() == null
+                        || safeArena.equalsIgnoreCase(t.getClientePago().getArenaId()))
                 .toList();
 
         if (!tarjetas.isEmpty()) {
             return deduplicateCards(tarjetas).stream().map(this::mapToTarjetaResponse).toList();
         }
 
-        // Fallback: Si no hay detalle en TarjetaClientePago, consultar ClientePago directamente para esta arena
-        java.util.List<ClientePago> clientesPago = clientePagoRepository.findByArenaIdAndArenaUsuarioIdAndEstadoId(safeArena, usuarioId, 1);
+        // Fallback: Si no hay detalle en TarjetaClientePago, consultar ClientePago
+        // directamente para esta arena
+        java.util.List<ClientePago> clientesPago = clientePagoRepository
+                .findByArenaIdAndArenaUsuarioIdAndEstadoId(safeArena, usuarioId, 1);
         if (clientesPago.isEmpty()) {
             clientesPago = clientePagoRepository.findByArenaUsuarioIdAndEstadoId(usuarioId, 1)
                     .stream()
@@ -1092,7 +1233,8 @@ public class PaymentServiceImpl implements PaymentService {
 
         java.util.Map<String, ClientePago> uniqueCp = new java.util.LinkedHashMap<>();
         for (ClientePago cp : clientesPago) {
-            String key = cp.getTarjetaEnmascarada() != null ? cp.getTarjetaEnmascarada().trim() : (cp.getBindingId() != null ? cp.getBindingId().trim() : String.valueOf(cp.getId()));
+            String key = cp.getTarjetaEnmascarada() != null ? cp.getTarjetaEnmascarada().trim()
+                    : (cp.getBindingId() != null ? cp.getBindingId().trim() : String.valueOf(cp.getId()));
             uniqueCp.putIfAbsent(key, cp);
         }
 
@@ -1100,7 +1242,8 @@ public class PaymentServiceImpl implements PaymentService {
                 .id(cp.getId())
                 .clientePagoId(cp.getId())
                 .bindingId(cp.getBindingId())
-                .tarjetaEnmascarada(cp.getTarjetaEnmascarada() != null ? cp.getTarjetaEnmascarada() : "**** **** **** ****")
+                .tarjetaEnmascarada(
+                        cp.getTarjetaEnmascarada() != null ? cp.getTarjetaEnmascarada() : "**** **** **** ****")
                 .franquicia("TARJETA")
                 .esPredeterminada(true)
                 .estadoId(cp.getEstadoId())
@@ -1115,15 +1258,18 @@ public class PaymentServiceImpl implements PaymentService {
         java.util.Map<String, TarjetaClientePago> unique = new java.util.LinkedHashMap<>();
         for (TarjetaClientePago t : cards) {
             String pan = t.getTarjetaEnmascarada() != null ? t.getTarjetaEnmascarada().replaceAll("[^0-9]", "") : "";
-            String key = !pan.isBlank() ? pan : (t.getTarjetaId() != null ? t.getTarjetaId().trim() : String.valueOf(t.getId()));
+            String key = !pan.isBlank() ? pan
+                    : (t.getTarjetaId() != null ? t.getTarjetaId().trim() : String.valueOf(t.getId()));
 
             TarjetaClientePago current = unique.get(key);
             if (current == null) {
                 unique.put(key, t);
             } else {
-                if (Boolean.TRUE.equals(t.getEsPredeterminada()) && !Boolean.TRUE.equals(current.getEsPredeterminada())) {
+                if (Boolean.TRUE.equals(t.getEsPredeterminada())
+                        && !Boolean.TRUE.equals(current.getEsPredeterminada())) {
                     unique.put(key, t);
-                } else if (Boolean.TRUE.equals(t.getEsPredeterminada()) == Boolean.TRUE.equals(current.getEsPredeterminada())) {
+                } else if (Boolean.TRUE.equals(t.getEsPredeterminada()) == Boolean.TRUE
+                        .equals(current.getEsPredeterminada())) {
                     if (t.getId() != null && current.getId() != null && t.getId() > current.getId()) {
                         unique.put(key, t);
                     }
@@ -1131,7 +1277,8 @@ public class PaymentServiceImpl implements PaymentService {
             }
         }
         return unique.values().stream()
-                .sorted((a, b) -> Boolean.compare(Boolean.TRUE.equals(b.getEsPredeterminada()), Boolean.TRUE.equals(a.getEsPredeterminada())))
+                .sorted((a, b) -> Boolean.compare(Boolean.TRUE.equals(b.getEsPredeterminada()),
+                        Boolean.TRUE.equals(a.getEsPredeterminada())))
                 .toList();
     }
 
@@ -1141,10 +1288,12 @@ public class PaymentServiceImpl implements PaymentService {
         String safeArena = (arenaId != null && !arenaId.isBlank()) ? arenaId.trim() : "1";
         String clienteReferencia = resolverClientId(safeArena, usuarioId);
 
-        // 1. Obtener o crear ClientePago único por Arena y Usuario (Un solo cliente por arena_usuario_id / cliente_referencia)
+        // 1. Obtener o crear ClientePago único por Arena y Usuario (Un solo cliente por
+        // arena_usuario_id / cliente_referencia)
         ClientePago clientePago = clientePagoRepository
                 .findByClienteReferencia(clienteReferencia)
-                .or(() -> clientePagoRepository.findByArenaIdAndArenaUsuarioIdAndEstadoId(safeArena, usuarioId, 1).stream().findFirst())
+                .or(() -> clientePagoRepository.findByArenaIdAndArenaUsuarioIdAndEstadoId(safeArena, usuarioId, 1)
+                        .stream().findFirst())
                 .or(() -> clientePagoRepository.findByArenaUsuarioIdAndEstadoId(usuarioId, 1).stream().findFirst())
                 .map(existente -> {
                     if (existente.getArenaId() == null) {
@@ -1172,11 +1321,14 @@ public class PaymentServiceImpl implements PaymentService {
                         .creacionUsuario(usuarioId)
                         .build()));
 
-        // Limpiar cualquier cliente_pago duplicado residual en la base de datos para este usuario y arena
-        java.util.List<ClientePago> duplicadosCliente = clientePagoRepository.findByArenaIdAndArenaUsuarioIdAndEstadoId(safeArena, usuarioId, 1);
+        // Limpiar cualquier cliente_pago duplicado residual en la base de datos para
+        // este usuario y arena
+        java.util.List<ClientePago> duplicadosCliente = clientePagoRepository
+                .findByArenaIdAndArenaUsuarioIdAndEstadoId(safeArena, usuarioId, 1);
         for (ClientePago dup : duplicadosCliente) {
             if (!dup.getId().equals(clientePago.getId())) {
-                java.util.List<TarjetaClientePago> huerfanas = tarjetaClientePagoRepository.findByClientePagoId(dup.getId());
+                java.util.List<TarjetaClientePago> huerfanas = tarjetaClientePagoRepository
+                        .findByClientePagoId(dup.getId());
                 for (TarjetaClientePago th : huerfanas) {
                     th.setClientePago(clientePago);
                 }
@@ -1186,9 +1338,12 @@ public class PaymentServiceImpl implements PaymentService {
             }
         }
 
-        // 2. Buscar si ya existe una TarjetaClientePago activa para esta misma tarjeta en la arena (Idempotencia)
+        // 2. Buscar si ya existe una TarjetaClientePago activa para esta misma tarjeta
+        // en la arena (Idempotencia)
         String targetBindingId = request.getBindingId() != null ? request.getBindingId().trim() : "";
-        String targetPanDigits = request.getTarjetaEnmascarada() != null ? request.getTarjetaEnmascarada().replaceAll("[^0-9]", "") : "";
+        String targetPanDigits = request.getTarjetaEnmascarada() != null
+                ? request.getTarjetaEnmascarada().replaceAll("[^0-9]", "")
+                : "";
 
         java.util.List<TarjetaClientePago> tarjetasExistentes = tarjetaClientePagoRepository
                 .findByClientePagoArenaIdAndClientePagoArenaUsuarioIdAndEstadoId(safeArena, usuarioId, 1);
@@ -1199,7 +1354,8 @@ public class PaymentServiceImpl implements PaymentService {
         TarjetaClientePago existente = null;
         for (TarjetaClientePago t : tarjetasExistentes) {
             String tBinding = t.getTarjetaId() != null ? t.getTarjetaId().trim() : "";
-            String tDigits = t.getTarjetaEnmascarada() != null ? t.getTarjetaEnmascarada().replaceAll("[^0-9]", "") : "";
+            String tDigits = t.getTarjetaEnmascarada() != null ? t.getTarjetaEnmascarada().replaceAll("[^0-9]", "")
+                    : "";
             if ((!targetBindingId.isEmpty() && targetBindingId.equalsIgnoreCase(tBinding))
                     || (!targetPanDigits.isEmpty() && targetPanDigits.equalsIgnoreCase(tDigits))) {
                 existente = t;
@@ -1207,7 +1363,8 @@ public class PaymentServiceImpl implements PaymentService {
             }
         }
 
-        boolean marcarPredeterminada = Boolean.TRUE.equals(request.getEsPredeterminada()) || tarjetasExistentes.isEmpty();
+        boolean marcarPredeterminada = Boolean.TRUE.equals(request.getEsPredeterminada())
+                || tarjetasExistentes.isEmpty();
 
         TarjetaClientePago tarjeta;
         if (existente != null) {
@@ -1237,10 +1394,13 @@ public class PaymentServiceImpl implements PaymentService {
             tarjeta.setEstadoId(1);
             tarjeta = tarjetaClientePagoRepository.save(tarjeta);
 
-            // Desactivar cualquier registro duplicado previo residual de la misma tarjeta en la arena
+            // Desactivar cualquier registro duplicado previo residual de la misma tarjeta
+            // en la arena
             for (TarjetaClientePago t : tarjetasExistentes) {
                 if (!t.getId().equals(tarjeta.getId())) {
-                    String tDigits = t.getTarjetaEnmascarada() != null ? t.getTarjetaEnmascarada().replaceAll("[^0-9]", "") : "";
+                    String tDigits = t.getTarjetaEnmascarada() != null
+                            ? t.getTarjetaEnmascarada().replaceAll("[^0-9]", "")
+                            : "";
                     String tBinding = t.getTarjetaId() != null ? t.getTarjetaId().trim() : "";
                     boolean esMismaTarjeta = (!targetBindingId.isEmpty() && targetBindingId.equalsIgnoreCase(tBinding))
                             || (!targetPanDigits.isEmpty() && targetPanDigits.equalsIgnoreCase(tDigits));
@@ -1253,7 +1413,8 @@ public class PaymentServiceImpl implements PaymentService {
                 }
             }
             Long savedTarjetaId = tarjeta.getId();
-            tarjetaClientePagoRepository.saveAll(tarjetasExistentes.stream().filter(t -> !t.getId().equals(savedTarjetaId)).toList());
+            tarjetaClientePagoRepository
+                    .saveAll(tarjetasExistentes.stream().filter(t -> !t.getId().equals(savedTarjetaId)).toList());
         } else {
             // Es una tarjeta nueva: si será predeterminada, desmarcar las anteriores
             if (marcarPredeterminada && !tarjetasExistentes.isEmpty()) {
@@ -1264,11 +1425,13 @@ public class PaymentServiceImpl implements PaymentService {
             tarjeta = TarjetaClientePago.builder()
                     .clientePago(clientePago)
                     .tarjetaId(request.getBindingId())
-                    .tarjetaEnmascarada(request.getTarjetaEnmascarada() != null ? request.getTarjetaEnmascarada() : clientePago.getTarjetaEnmascarada())
+                    .tarjetaEnmascarada(request.getTarjetaEnmascarada() != null ? request.getTarjetaEnmascarada()
+                            : clientePago.getTarjetaEnmascarada())
                     .franquicia(request.getFranquicia() != null ? request.getFranquicia().toUpperCase() : "TARJETA")
                     .expiracion(request.getExpiracion())
                     .titular(request.getTitular())
-                    .alias(request.getAlias() != null && !request.getAlias().isBlank() ? request.getAlias().trim() : null)
+                    .alias(request.getAlias() != null && !request.getAlias().isBlank() ? request.getAlias().trim()
+                            : null)
                     .esPredeterminada(marcarPredeterminada)
                     .estadoId(1)
                     .creacionUsuario(usuarioId)
@@ -1287,9 +1450,11 @@ public class PaymentServiceImpl implements PaymentService {
         TarjetaClientePago tarjeta = tarjetaClientePagoRepository
                 .findByIdAndClientePagoArenaIdAndClientePagoArenaUsuarioId(tarjetaId, safeArena, usuarioId)
                 .or(() -> tarjetaClientePagoRepository.findByIdAndClientePagoArenaUsuarioId(tarjetaId, usuarioId))
-                .orElseThrow(() -> new ResourceNotFoundException("Tarjeta con ID " + tarjetaId + " no encontrada para esta arena y usuario"));
+                .orElseThrow(() -> new ResourceNotFoundException(
+                        "Tarjeta con ID " + tarjetaId + " no encontrada para esta arena y usuario"));
 
-        String bindingId = tarjeta.getTarjetaId() != null ? tarjeta.getTarjetaId() : tarjeta.getClientePago().getBindingId();
+        String bindingId = tarjeta.getTarjetaId() != null ? tarjeta.getTarjetaId()
+                : tarjeta.getClientePago().getBindingId();
         if (bindingId != null && !bindingId.isBlank()) {
             try {
                 credibancoClient.unBindCard(bindingId, safeArena, usuarioId);
@@ -1334,7 +1499,8 @@ public class PaymentServiceImpl implements PaymentService {
         }
 
         if (!found) {
-            throw new ResourceNotFoundException("Tarjeta con ID " + tarjetaId + " no pertenece a las tarjetas activas de esta arena");
+            throw new ResourceNotFoundException(
+                    "Tarjeta con ID " + tarjetaId + " no pertenece a las tarjetas activas de esta arena");
         }
 
         tarjetaClientePagoRepository.saveAll(tarjetas);
@@ -1347,7 +1513,8 @@ public class PaymentServiceImpl implements PaymentService {
         TarjetaClientePago tarjeta = tarjetaClientePagoRepository
                 .findByIdAndClientePagoArenaIdAndClientePagoArenaUsuarioId(tarjetaId, safeArena, usuarioId)
                 .or(() -> tarjetaClientePagoRepository.findByIdAndClientePagoArenaUsuarioId(tarjetaId, usuarioId))
-                .orElseThrow(() -> new ResourceNotFoundException("Tarjeta con ID " + tarjetaId + " no encontrada para esta arena y usuario"));
+                .orElseThrow(() -> new ResourceNotFoundException(
+                        "Tarjeta con ID " + tarjetaId + " no encontrada para esta arena y usuario"));
 
         tarjeta.setAlias(alias != null && !alias.isBlank() ? alias.trim() : null);
         tarjeta = tarjetaClientePagoRepository.save(tarjeta);
@@ -1359,7 +1526,8 @@ public class PaymentServiceImpl implements PaymentService {
     @Transactional
     public CredibancoGetBindingsResponse syncCredibancoBindings(String arenaId, Long usuarioId) {
         try {
-            CredibancoGetBindingsResponse resp = credibancoClient.getBindings(resolverClientId(arenaId, usuarioId), arenaId, usuarioId);
+            CredibancoGetBindingsResponse resp = credibancoClient.getBindings(resolverClientId(arenaId, usuarioId),
+                    arenaId, usuarioId);
             if (resp != null && resp.getBindings() != null) {
                 for (var item : resp.getBindings()) {
                     String bId = item.resolveBindingId();
@@ -1377,7 +1545,9 @@ public class PaymentServiceImpl implements PaymentService {
             }
             return resp;
         } catch (Exception ex) {
-            log.warn("Credibanco no soporta getBindings.do (Acceso denegado). El almacenamiento de tarjetas se gestiona localmente: {}", ex.getMessage());
+            log.warn(
+                    "Credibanco no soporta getBindings.do (Acceso denegado). El almacenamiento de tarjetas se gestiona localmente: {}",
+                    ex.getMessage());
             CredibancoGetBindingsResponse empty = new CredibancoGetBindingsResponse();
             empty.setErrorCode("0");
             empty.setBindings(java.util.Collections.emptyList());
@@ -1397,7 +1567,8 @@ public class PaymentServiceImpl implements PaymentService {
         return TarjetaGuardadaResponse.builder()
                 .id(tarjeta.getId())
                 .clientePagoId(tarjeta.getClientePago() != null ? tarjeta.getClientePago().getId() : null)
-                .bindingId(tarjeta.getTarjetaId() != null ? tarjeta.getTarjetaId() : (tarjeta.getClientePago() != null ? tarjeta.getClientePago().getBindingId() : null))
+                .bindingId(tarjeta.getTarjetaId() != null ? tarjeta.getTarjetaId()
+                        : (tarjeta.getClientePago() != null ? tarjeta.getClientePago().getBindingId() : null))
                 .tarjetaEnmascarada(tarjeta.getTarjetaEnmascarada())
                 .franquicia(tarjeta.getFranquicia())
                 .expiracion(tarjeta.getExpiracion())
@@ -1410,13 +1581,14 @@ public class PaymentServiceImpl implements PaymentService {
     }
 
     private String mapEstadoNombre(Integer estadoId) {
-        if (estadoId == null) return "DESCONOCIDO";
+        if (estadoId == null)
+            return "DESCONOCIDO";
         return switch (estadoId) {
-            case 1 -> "INICIADO";
-            case 2 -> "APROBADO";
-            case 3 -> "RECHAZADO";
-            case 4 -> "REVERSADO";
-            case 5 -> "ANULADO";
+            case 22, 1 -> "INICIADO";
+            case 23, 2 -> "APROBADO";
+            case 24, 3 -> "RECHAZADO";
+            case 25, 4 -> "REVERSADO";
+            case 26, 5 -> "ANULADO";
             default -> "ESTADO_" + estadoId;
         };
     }
@@ -1425,7 +1597,8 @@ public class PaymentServiceImpl implements PaymentService {
         if (arenaId != null) {
             try {
                 return Long.parseLong(arenaId);
-            } catch (NumberFormatException ignored) {}
+            } catch (NumberFormatException ignored) {
+            }
         }
         return 1L;
     }

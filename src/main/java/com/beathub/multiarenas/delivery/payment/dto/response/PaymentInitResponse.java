@@ -15,10 +15,21 @@ public class PaymentInitResponse {
     private Long pedidoPagoId;
     private Long pedidoId;
     private String referenciaPago;
-    private String credibancoOrderId;
+    private String orderId;
     private String formUrl;
     private BigDecimal monto;
     private String moneda;
     private Integer estadoId;
     private String estadoDescripcion;
+
+    public void setCredibancoOrderId(String credibancoOrderId) {
+        this.orderId = credibancoOrderId;
+    }
+
+    public static class PaymentInitResponseBuilder {
+        public PaymentInitResponseBuilder credibancoOrderId(String credibancoOrderId) {
+            this.orderId = credibancoOrderId;
+            return this;
+        }
+    }
 }

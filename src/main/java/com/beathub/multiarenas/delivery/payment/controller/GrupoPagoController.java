@@ -178,7 +178,7 @@ public class GrupoPagoController {
         Object attr = request.getAttribute("X-User-Id");
         if (attr instanceof Long id) return id;
         if (attr instanceof Number num) return num.longValue();
-        return SecurityUtils.getCurrentUsuarioId().orElse(1L);
+        return SecurityUtils.getCurrentUsuarioId().orElse(null);
     }
 
     private String extractAuthToken(HttpServletRequest request) {

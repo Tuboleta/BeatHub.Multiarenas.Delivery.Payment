@@ -33,6 +33,15 @@ public class PedidoPago {
     @Column(name = "credibanco_order_id", length = 100)
     private String credibancoOrderId;
 
+    @Column(name = "mp_order_id", length = 100)
+    private String mpOrderId;
+
+    @Column(name = "mp_payment_id", length = 100)
+    private String mpPaymentId;
+
+    @Column(name = "init_point", columnDefinition = "TEXT")
+    private String initPoint;
+
     @Column(name = "md_order", length = 100)
     private String mdOrder;
 
@@ -52,7 +61,7 @@ public class PedidoPago {
     private GrupoPagoUsuario grupoPagoUsuario;
 
     @Column(name = "pasarela_id")
-    private Integer pasarelaId;
+    private Integer pasarelaId; // 1: Mercado Pago, 2: Credibanco
 
     @Column(nullable = false, precision = 12, scale = 2)
     private BigDecimal monto;
@@ -87,8 +96,15 @@ public class PedidoPago {
     @Column(name = "json_params", columnDefinition = "TEXT")
     private String jsonParams;
 
+    // Estados de Flujo 5 (Transacciones de Pago en public.estado)
+    public static final int ESTADO_INICIADO = 22;
+    public static final int ESTADO_APROBADO = 23;
+    public static final int ESTADO_RECHAZADO = 24;
+    public static final int ESTADO_REVERSADO = 25;
+    public static final int ESTADO_ANULADO = 26;
+
     @Column(name = "estado_id", nullable = false)
-    private Integer estadoId; // 1: Iniciado, 2: Aprobado/Deposited, 3: Rechazado, 4: Reversado, 5: Anulado
+    private Integer estadoId; // Flujo 5: 22=Iniciado, 23=Aprobado, 24=Rechazado, 25=Reversado, 26=Anulado
 
     @Column(name = "creacion_fecha", nullable = false, updatable = false)
     private LocalDateTime creacionFecha;
@@ -111,7 +127,7 @@ public class PedidoPago {
             moneda = "COP";
         }
         if (estadoId == null) {
-            estadoId = 1;
+            estadoId = ESTADO_INICIADO; // 22: INICIADO (Flujo 5)
         }
     }
 

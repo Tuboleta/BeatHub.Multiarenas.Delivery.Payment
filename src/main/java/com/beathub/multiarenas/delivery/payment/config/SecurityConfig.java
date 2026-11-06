@@ -30,7 +30,13 @@ public class SecurityConfig {
             "/swagger-ui.html",
             "/actuator/**",
             "/webhook/**", // Endpoints públicos para webhooks/callbacks de Credibanco
-            "/grupos/codigo/**" // Consulta pública de grupo por enlace de invitación / QR
+            "/grupos/codigo/**", // Consulta pública de grupo por enlace de invitación / QR
+            "/grupos/*/pagar", // Permite a acompañantes / invitados pagar su cuota sin cuenta obligatoria
+            "/grupos/*", // Consulta pública de detalle de grupo de pago
+            "/transacciones/*/estado", // Consulta pública de estado por ID de pago
+            "/transacciones/*/*/estado", // Consulta pública de estado por referencia / pedido / credibanco / mp
+            "/transacciones/*/*/*/estado", // Consulta pública de estado extendido
+            "/transacciones/mercadopago/order/*" // Consulta pública de orden MP
     };
 
     @Bean

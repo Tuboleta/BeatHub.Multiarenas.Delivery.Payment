@@ -29,5 +29,9 @@ public class PagarCuotaGrupoRequest {
 
     private String description;
 
+    private String nombre;
+
+    private String email;
+
     private Map<String, Object> extraParams;
 }

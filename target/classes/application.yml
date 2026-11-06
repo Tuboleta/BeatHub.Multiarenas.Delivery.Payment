@@ -60,6 +60,25 @@ credibanco:
   mcc-travel-agency: ${CREDIBANCO_MCC_TRAVEL_AGENCY:false}
   proxy-base-url: ${CREDIBANCO_PROXY_BASE_URL:https://ecouat.credibanco.com/proxy/rest}
 
+# Configuración Mercado Pago (ApiOrders v1/orders)
+mercadopago:
+  base-url: ${MERCADOPAGO_BASE_URL:https://api.mercadopago.com}
+  access-token: ${MERCADOPAGO_ACCESS_TOKEN:APP_USR-4620466298947158-110416-9983ebe8a9924a44676dcdcd368366ed-3448107144}
+  public-key: ${MERCADOPAGO_PUBLIC_KEY:}
+  webhook-secret: ${MERCADOPAGO_WEBHOOK_SECRET:9bf09d74e4033a869a2abcbaa098464e0d59ec4c80d945bb150d6eb01e58f92e}
+  currency: ${MERCADOPAGO_CURRENCY:COP}
+  default-return-url: ${MERCADOPAGO_DEFAULT_RETURN_URL:http://localhost:3000/checkout/payment-return}
+  default-fail-url: ${MERCADOPAGO_DEFAULT_FAIL_URL:http://localhost:3000/checkout/payment-return?status=failed}
+  public-webhook-url: ${MERCADOPAGO_PUBLIC_WEBHOOK_URL:https://thrower-tribute-disrupt.ngrok-free.dev/api/v1/payment/webhook/mercadopago}
+
+# Configuración Pasarela Activa por Defecto (MERCADOPAGO o CREDIBANCO)
+payment:
+  default-gateway: ${PAYMENT_DEFAULT_GATEWAY:MERCADOPAGO}
+  sonda:
+    enabled: ${PAYMENT_SONDA_ENABLED:false}
+    fixed-delay-ms: ${PAYMENT_SONDA_FIXED_DELAY_MS:300000}
+    max-age-minutes: ${PAYMENT_SONDA_MAX_AGE_MINUTES:30}
+
 # Springdoc OpenAPI 3 / Swagger UI
 springdoc:
   api-docs:
@@ -106,4 +125,3 @@ services:
 app:
   pwa:
     base-url: ${PWA_BASE_URL:http://localhost:3000}
-

@@ -14,4 +14,6 @@ public interface TarjetaClientePagoRepository extends JpaRepository<TarjetaClien
     List<TarjetaClientePago> findByClientePagoArenaIdAndClientePagoArenaUsuarioIdAndEstadoId(String arenaId, Long arenaUsuarioId, Integer estadoId);
     Optional<TarjetaClientePago> findByIdAndClientePagoArenaUsuarioId(Long id, Long arenaUsuarioId);
     Optional<TarjetaClientePago> findByIdAndClientePagoArenaIdAndClientePagoArenaUsuarioId(Long id, String arenaId, Long arenaUsuarioId);
+    Optional<TarjetaClientePago> findByMpCardId(String mpCardId);
+    Optional<TarjetaClientePago> findByMpPaymentProfileId(String mpPaymentProfileId);
 }

@@ -70,6 +70,24 @@ spec:
               value: "https://delivery-daviarena-stg.beat-hub.com/checkout/payment-return?status=failed"
             - name: CREDIBANCO_PUBLIC_WEBHOOK_URL
               value: "https://delivery-api-stg.beat-hub.com/api/v1/payment/webhook/credibanco/callback"
+            - name: PAYMENT_DEFAULT_GATEWAY
+              value: "MERCADOPAGO"
+            - name: MERCADOPAGO_BASE_URL
+              value: "https://api.mercadopago.com"
+            - name: MERCADOPAGO_ACCESS_TOKEN
+              value: "APP_USR-4620466298947158-110416-9983ebe8a9924a44676dcdcd368366ed-3448107144"
+            - name: MERCADOPAGO_WEBHOOK_SECRET
+              value: "9bf09d74e4033a869a2abcbaa098464e0d59ec4c80d945bb150d6eb01e58f92e"
+            - name: MERCADOPAGO_CURRENCY
+              value: "COP"
+            - name: MERCADOPAGO_DEFAULT_RETURN_URL
+              value: "https://delivery-daviarena-stg.beat-hub.com/checkout/payment-return"
+            - name: MERCADOPAGO_DEFAULT_FAIL_URL
+              value: "https://delivery-daviarena-stg.beat-hub.com/checkout/payment-return?status=failed"
+            - name: MERCADOPAGO_PUBLIC_WEBHOOK_URL
+              value: "https://delivery-api-stg.beat-hub.com/api/v1/payment/webhook/mercadopago"
+            - name: PAYMENT_SONDA_ENABLED
+              value: "false"
           resources:
             requests:
               cpu: "250m"

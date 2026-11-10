@@ -526,6 +526,7 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
 
     private PaymentStatusResponse syncAndMapOrderStatus(PedidoPago pedidoPago, String arenaId, Long usuarioId) {
         String resolvedMedioPago = null;
+        String resolvedTerminal = "MERCADOPAGO";
 
         // 1. Si cuenta con mpOrderId (flujo principal de Mercado Pago Orders / Checkout
         // Pro), consultar orden directamente
@@ -533,6 +534,7 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
             try {
                 MpOrderResponse mpOrder = mercadoPagoClient.getOrder(pedidoPago.getMpOrderId(), arenaId, usuarioId);
                 if (mpOrder != null) {
+                    resolvedTerminal = mpOrder.resolveTerminalCode();
                     String status = mpOrder.getStatus();
                     String statusDetail = mpOrder.getStatusDetail();
                     pedidoPago.setActionCode(status);
@@ -546,14 +548,18 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
                                 || !Integer.valueOf(2).equals(pedidoPago.getEstadoId())) {
                             pedidoPago.setMpPaymentId(firstPayment.getId());
                         }
-                        if (firstPayment.getAuthorizationCode() != null) {
-                            pedidoPago.setAuthCode(firstPayment.getAuthorizationCode());
+                        String authCode = firstPayment.resolveAuthorizationCode();
+                        if (authCode != null && !authCode.isBlank()) {
+                            pedidoPago.setAuthCode(authCode);
                         }
                         resolvedMedioPago = firstPayment.resolveFriendlyPaymentName();
+                    } else if (mpOrder.getId() != null && !mpOrder.getId().isBlank()) {
+                        pedidoPago.setAuthCode(mpOrder.getId());
                     }
 
                     int newEstadoId = mapMpStatusToEstadoId(status, statusDetail);
-                    applyStateTransition(pedidoPago, newEstadoId, status, statusDetail, resolvedMedioPago);
+                    applyStateTransition(pedidoPago, newEstadoId, status, statusDetail, resolvedMedioPago,
+                            resolvedTerminal);
                 }
             } catch (Exception ex) {
                 log.debug("[MercadoPagoServiceImpl] Consulta a v1/orders {} no aplicable: {}",
@@ -567,8 +573,9 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
                 if (paymentDetail != null) {
                     pedidoPago.setActionCode(paymentDetail.getStatus());
                     pedidoPago.setActionCodeDescription(paymentDetail.getStatusDetail());
-                    if (paymentDetail.getAuthorizationCode() != null) {
-                        pedidoPago.setAuthCode(paymentDetail.getAuthorizationCode());
+                    String authCode = paymentDetail.resolveAuthorizationCode();
+                    if (authCode != null && !authCode.isBlank()) {
+                        pedidoPago.setAuthCode(authCode);
                     }
                     resolvedMedioPago = paymentDetail.resolveFriendlyPaymentName();
 
@@ -592,8 +599,9 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
                     }
                     pedidoPago.setActionCode(p.getStatus());
                     pedidoPago.setActionCodeDescription(p.getStatusDetail());
-                    if (p.getAuthorizationCode() != null) {
-                        pedidoPago.setAuthCode(p.getAuthorizationCode());
+                    String authCode = p.resolveAuthorizationCode();
+                    if (authCode != null && !authCode.isBlank()) {
+                        pedidoPago.setAuthCode(authCode);
                     }
                     resolvedMedioPago = p.resolveFriendlyPaymentName();
 
@@ -611,6 +619,14 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
             resolvedMedioPago = "Tarjeta de crédito o débito";
         }
 
+        String resolvedAuth = pedidoPago.getAuthCode();
+        if (resolvedAuth == null || resolvedAuth.isBlank()) {
+            resolvedAuth = pedidoPago.getMpPaymentId();
+        }
+        if (resolvedAuth == null || resolvedAuth.isBlank()) {
+            resolvedAuth = pedidoPago.getMpOrderId();
+        }
+
         return PaymentStatusResponse.builder()
                 .pedidoPagoId(pedidoPago.getId())
                 .pedidoId(pedidoPago.getPedidoId())
@@ -623,7 +639,9 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
                 .estadoNombre(mapEstadoNombre(pedidoPago.getEstadoId()))
                 .actionCode(pedidoPago.getActionCode())
                 .actionCodeDescription(pedidoPago.getActionCodeDescription())
-                .authCode(pedidoPago.getAuthCode())
+                .authCode(resolvedAuth)
+                .autorizacion(resolvedAuth)
+                .terminal(resolvedTerminal)
                 .medioPago(resolvedMedioPago)
                 .errorCode(pedidoPago.getErrorCode())
                 .errorMessage(pedidoPago.getErrorMessage())
@@ -741,7 +759,12 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
         var firstPayment = mpResp.getFirstPayment();
         if (firstPayment != null) {
             pedidoPago.setMpPaymentId(firstPayment.getId());
-            pedidoPago.setAuthCode(firstPayment.getAuthorizationCode());
+            String authCode = firstPayment.resolveAuthorizationCode();
+            if (authCode != null && !authCode.isBlank()) {
+                pedidoPago.setAuthCode(authCode);
+            }
+        } else if (mpResp.getId() != null && !mpResp.getId().isBlank()) {
+            pedidoPago.setAuthCode(mpResp.getId());
         }
 
         String mpStatus = mpResp.getStatus();
@@ -1208,12 +1231,14 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
                     currentEstadoId, newEstadoId, rawStatus);
             return false;
         }
-        // Transacciones ya Reversadas / Reembolsadas (25 en Flujo 5 o 4 histórico): estado terminal
+        // Transacciones ya Reversadas / Reembolsadas (25 en Flujo 5 o 4 histórico):
+        // estado terminal
         boolean isRefunded = Integer.valueOf(PedidoPago.ESTADO_REVERSADO).equals(currentEstadoId)
                 || Integer.valueOf(25).equals(currentEstadoId)
                 || Integer.valueOf(4).equals(currentEstadoId);
         if (isRefunded) {
-            log.info("🛡️ [MercadoPago] Ignorando cambio de estado para transacción ya REVERSADA/REEMBOLSADA: estado actual={} -> nuevo intentado={} ({})",
+            log.info(
+                    "🛡️ [MercadoPago] Ignorando cambio de estado para transacción ya REVERSADA/REEMBOLSADA: estado actual={} -> nuevo intentado={} ({})",
                     currentEstadoId, newEstadoId, rawStatus);
             return false;
         }
@@ -1222,25 +1247,34 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
 
     private void applyStateTransition(PedidoPago pedidoPago, int newEstadoId, String rawStatus, String statusDetail,
             String resolvedMedioPago) {
+        applyStateTransition(pedidoPago, newEstadoId, rawStatus, statusDetail, resolvedMedioPago, "MERCADOPAGO");
+    }
+
+    private void applyStateTransition(PedidoPago pedidoPago, int newEstadoId, String rawStatus, String statusDetail,
+            String resolvedMedioPago, String terminalCode) {
         Integer currentEstadoId = pedidoPago.getEstadoId();
 
         if (!isStateChangeAllowed(currentEstadoId, newEstadoId, rawStatus)) {
-            // Guardar solo metadatos si no existían (authCode, actionCode, etc.) sin alterar el estado
+            // Guardar solo metadatos si no existían (authCode, actionCode, etc.) sin
+            // alterar el estado
             pedidoPagoRepository.save(pedidoPago);
             return;
         }
 
+        String effectiveTerminal = (terminalCode != null && !terminalCode.isBlank()) ? terminalCode : "MERCADOPAGO";
         if (newEstadoId == PedidoPago.ESTADO_APROBADO || newEstadoId == 2) {
             onPaymentApproved(pedidoPago, "Pago aprobado por Mercado Pago", pedidoPago.getAuthCode(),
-                    "MERCADOPAGO", resolvedMedioPago);
+                    effectiveTerminal, resolvedMedioPago);
         } else if (newEstadoId == PedidoPago.ESTADO_REVERSADO || newEstadoId == 4) {
             pedidoPago.setEstadoId(PedidoPago.ESTADO_REVERSADO);
             pedidoPago.setErrorMessage(statusDetail != null ? statusDetail : "Reembolso procesado en Mercado Pago");
             pedidoPagoRepository.save(pedidoPago);
             try {
-                orderingClient.updateOrderStatus(pedidoPago.getPedidoId(), PedidoPago.ESTADO_REVERSADO, "Pedido reembolsado/reversado en Mercado Pago", null);
+                orderingClient.updateOrderStatus(pedidoPago.getPedidoId(), PedidoPago.ESTADO_REVERSADO,
+                        "Pedido reembolsado/reversado en Mercado Pago", null);
             } catch (Exception ex) {
-                log.warn("No se pudo notificar reembolso a Ordering para pedido #{}: {}", pedidoPago.getPedidoId(), ex.getMessage());
+                log.warn("No se pudo notificar reembolso a Ordering para pedido #{}: {}", pedidoPago.getPedidoId(),
+                        ex.getMessage());
             }
         } else if (newEstadoId == PedidoPago.ESTADO_RECHAZADO || newEstadoId == 3) {
             pedidoPago.setEstadoId(PedidoPago.ESTADO_RECHAZADO);
@@ -1248,7 +1282,8 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
             pedidoPagoRepository.save(pedidoPago);
         } else if (newEstadoId == PedidoPago.ESTADO_ANULADO || newEstadoId == 5) {
             pedidoPago.setEstadoId(PedidoPago.ESTADO_ANULADO);
-            pedidoPago.setErrorMessage(statusDetail != null ? statusDetail : "Pago cancelado o anulado por Mercado Pago");
+            pedidoPago
+                    .setErrorMessage(statusDetail != null ? statusDetail : "Pago cancelado o anulado por Mercado Pago");
             pedidoPagoRepository.save(pedidoPago);
         } else {
             // PedidoPago.ESTADO_INICIADO (22)
@@ -1279,6 +1314,12 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
         String effectiveAuth = (autorizacion != null && !autorizacion.isBlank())
                 ? autorizacion
                 : pedidoPago.getAuthCode();
+        if (effectiveAuth == null || effectiveAuth.isBlank()) {
+            effectiveAuth = pedidoPago.getMpPaymentId();
+        }
+        if (effectiveAuth == null || effectiveAuth.isBlank()) {
+            effectiveAuth = pedidoPago.getMpOrderId();
+        }
 
         String effectivePaymentMethod = (friendlyPaymentMethod != null && !friendlyPaymentMethod.isBlank())
                 ? friendlyPaymentMethod
@@ -1306,13 +1347,14 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
                 if (nuevoSaldo.compareTo(BigDecimal.ZERO) <= 0) {
                     gp.setEstadoId(2);
                     String msg = "Vaca/Pago grupal 100% completado con Mercado Pago (" + detailMessage + ")";
-                    orderingClient.updateOrderStatus(pedidoPago.getPedidoId(), PedidoPago.ESTADO_APROBADO, msg, null, effectiveAuth, terminal,
+                    orderingClient.updateOrderStatus(pedidoPago.getPedidoId(), PedidoPago.ESTADO_APROBADO, msg, null,
+                            effectiveAuth, terminal,
                             pedidoPago.getMonto(), effectivePaymentMethod);
                     if (notificationServiceClient != null) {
                         try {
                             notificationServiceClient.notificarVacaCompletada(
                                     gp.getArenaId() != null && gp.getArenaId().matches("\\d+")
-                                             ? Long.parseLong(gp.getArenaId())
+                                            ? Long.parseLong(gp.getArenaId())
                                             : 1L,
                                     pedidoPago.getUsuarioId() != null ? pedidoPago.getUsuarioId() : gpu.getUsuarioId(),
                                     pedidoPago.getPedidoId(),
@@ -1327,7 +1369,8 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
             }
         } else {
             // Notificar a Ordering (estado 23: Aprobado / Pagado)
-            orderingClient.updateOrderStatus(pedidoPago.getPedidoId(), PedidoPago.ESTADO_APROBADO, detailMessage, null, effectiveAuth, terminal,
+            orderingClient.updateOrderStatus(pedidoPago.getPedidoId(), PedidoPago.ESTADO_APROBADO, detailMessage, null,
+                    effectiveAuth, terminal,
                     pedidoPago.getMonto(), effectivePaymentMethod);
         }
     }

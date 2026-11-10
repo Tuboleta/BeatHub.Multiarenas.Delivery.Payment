@@ -14,10 +14,13 @@ import lombok.NoArgsConstructor;
 public class UserClientResponse {
     private Long usuarioId;
     private String username;
+    private String ssoId;
     private String nombres;
     private String apellidos;
     private String email;
     private String telefono;
+    private String numeroDocumento;
+    private Integer tipoDocumentoId;
 
     public String getNombreCompleto() {
         String n = nombres != null ? nombres.trim() : "";

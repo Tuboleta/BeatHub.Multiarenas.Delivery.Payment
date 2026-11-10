@@ -415,6 +415,7 @@ public class PaymentServiceImpl implements PaymentService {
                 .actionCode(pedidoPago.getActionCode())
                 .actionCodeDescription(pedidoPago.getActionCodeDescription())
                 .authCode(pedidoPago.getAuthCode())
+                .autorizacion(pedidoPago.getAuthCode())
                 .errorCode(pedidoPago.getErrorCode())
                 .errorMessage(pedidoPago.getErrorMessage())
                 .fechaPago(pedidoPago.getFechaPago())

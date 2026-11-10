@@ -44,6 +44,9 @@ public class MpOrderResponse {
 
     private Config config;
 
+    @JsonProperty("integration_data")
+    private IntegrationData integrationData;
+
     @JsonProperty("date_created")
     private String dateCreated;
 
@@ -56,6 +59,15 @@ public class MpOrderResponse {
     @JsonIgnoreProperties(ignoreUnknown = true)
     public static class Config {
         private OnlineConfig online;
+    }
+
+    @Data
+    @NoArgsConstructor
+    @AllArgsConstructor
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public static class IntegrationData {
+        @JsonProperty("application_id")
+        private String applicationId;
     }
 
     @Data
@@ -103,32 +115,105 @@ public class MpOrderResponse {
         private String paymentTypeId;
         @JsonProperty("authorization_code")
         private String authorizationCode;
+        @JsonProperty("reference_id")
+        private String referenceId;
+        @JsonProperty("paid_amount")
+        private BigDecimal paidAmount;
         @JsonProperty("payment_method")
         private PaymentMethodInfo paymentMethod;
 
-        public String getId() { return id; }
-        public void setId(String id) { this.id = id; }
+        public String getId() {
+            return id;
+        }
 
-        public String getStatus() { return status; }
-        public void setStatus(String status) { this.status = status; }
+        public void setId(String id) {
+            this.id = id;
+        }
 
-        public String getStatusDetail() { return statusDetail; }
-        public void setStatusDetail(String statusDetail) { this.statusDetail = statusDetail; }
+        public String getStatus() {
+            return status;
+        }
 
-        public BigDecimal getAmount() { return amount; }
-        public void setAmount(BigDecimal amount) { this.amount = amount; }
+        public void setStatus(String status) {
+            this.status = status;
+        }
 
-        public String getPaymentMethodId() { return paymentMethodId; }
-        public void setPaymentMethodId(String paymentMethodId) { this.paymentMethodId = paymentMethodId; }
+        public String getStatusDetail() {
+            return statusDetail;
+        }
 
-        public String getPaymentTypeId() { return paymentTypeId; }
-        public void setPaymentTypeId(String paymentTypeId) { this.paymentTypeId = paymentTypeId; }
+        public void setStatusDetail(String statusDetail) {
+            this.statusDetail = statusDetail;
+        }
 
-        public String getAuthorizationCode() { return authorizationCode; }
-        public void setAuthorizationCode(String authorizationCode) { this.authorizationCode = authorizationCode; }
+        public BigDecimal getAmount() {
+            return amount;
+        }
 
-        public PaymentMethodInfo getPaymentMethod() { return paymentMethod; }
-        public void setPaymentMethod(PaymentMethodInfo paymentMethod) { this.paymentMethod = paymentMethod; }
+        public void setAmount(BigDecimal amount) {
+            this.amount = amount;
+        }
+
+        public BigDecimal getPaidAmount() {
+            return paidAmount;
+        }
+
+        public void setPaidAmount(BigDecimal paidAmount) {
+            this.paidAmount = paidAmount;
+        }
+
+        public String getPaymentMethodId() {
+            return paymentMethodId;
+        }
+
+        public void setPaymentMethodId(String paymentMethodId) {
+            this.paymentMethodId = paymentMethodId;
+        }
+
+        public String getPaymentTypeId() {
+            return paymentTypeId;
+        }
+
+        public void setPaymentTypeId(String paymentTypeId) {
+            this.paymentTypeId = paymentTypeId;
+        }
+
+        public String getAuthorizationCode() {
+            return authorizationCode;
+        }
+
+        public void setAuthorizationCode(String authorizationCode) {
+            this.authorizationCode = authorizationCode;
+        }
+
+        public String getReferenceId() {
+            return referenceId;
+        }
+
+        public void setReferenceId(String referenceId) {
+            this.referenceId = referenceId;
+        }
+
+        public String resolveAuthorizationCode() {
+            if (referenceId != null && !referenceId.isBlank()) {
+                return referenceId;
+            }
+            if (authorizationCode != null && !authorizationCode.isBlank()) {
+                return authorizationCode;
+            }
+            if (id != null && !id.isBlank()) {
+                return id;
+            }
+            return null;
+        }
+
+        public PaymentMethodInfo getPaymentMethod() {
+            return paymentMethod;
+        }
+
+        public void setPaymentMethod(PaymentMethodInfo paymentMethod) {
+            this.paymentMethod = paymentMethod;
+        }
 
         public String resolveFriendlyPaymentName() {
             if (paymentMethod != null) {
@@ -156,16 +241,26 @@ public class MpOrderResponse {
             String typeLower = type != null ? type.toLowerCase().trim() : "";
 
             String brand = "";
-            if (idLower.contains("visa")) brand = "Visa";
-            else if (idLower.contains("master")) brand = "Mastercard";
-            else if (idLower.contains("amex")) brand = "American Express";
-            else if (idLower.contains("diners")) brand = "Diners Club";
-            else if (idLower.contains("codensa")) brand = "Codensa";
-            else if (idLower.contains("pse")) return "PSE";
-            else if (idLower.contains("efecty")) return "Efecty";
-            else if (idLower.contains("nequi")) return "Nequi";
-            else if (idLower.contains("daviplata")) return "DaviPlata";
-            else if (idLower.contains("account_money")) return "Dinero en Mercado Pago";
+            if (idLower.contains("visa"))
+                brand = "Visa";
+            else if (idLower.contains("master"))
+                brand = "Mastercard";
+            else if (idLower.contains("amex"))
+                brand = "American Express";
+            else if (idLower.contains("diners"))
+                brand = "Diners Club";
+            else if (idLower.contains("codensa"))
+                brand = "Codensa";
+            else if (idLower.contains("pse"))
+                return "PSE";
+            else if (idLower.contains("efecty"))
+                return "Efecty";
+            else if (idLower.contains("nequi"))
+                return "Nequi";
+            else if (idLower.contains("daviplata"))
+                return "DaviPlata";
+            else if (idLower.contains("account_money"))
+                return "Dinero en Mercado Pago";
 
             if (typeLower.contains("debit")) {
                 return brand.isEmpty() ? "Tarjeta de débito" : "Tarjeta de débito (" + brand + ")";
@@ -194,17 +289,30 @@ public class MpOrderResponse {
         @JsonProperty("checkout_url")
         private String checkoutUrl;
 
-        public String getInitPoint() { return initPoint; }
-        public void setInitPoint(String initPoint) { this.initPoint = initPoint; }
+        public String getInitPoint() {
+            return initPoint;
+        }
 
-        public String getCheckoutUrl() { return checkoutUrl; }
-        public void setCheckoutUrl(String checkoutUrl) { this.checkoutUrl = checkoutUrl; }
+        public void setInitPoint(String initPoint) {
+            this.initPoint = initPoint;
+        }
+
+        public String getCheckoutUrl() {
+            return checkoutUrl;
+        }
+
+        public void setCheckoutUrl(String checkoutUrl) {
+            this.checkoutUrl = checkoutUrl;
+        }
     }
 
     public String resolveCheckoutUrl(boolean preferSandbox) {
-        if (preferSandbox && sandboxInitPoint != null && !sandboxInitPoint.isBlank()) return sandboxInitPoint;
-        if (initPoint != null && !initPoint.isBlank()) return initPoint;
-        if (checkoutUrl != null && !checkoutUrl.isBlank()) return checkoutUrl;
+        if (preferSandbox && sandboxInitPoint != null && !sandboxInitPoint.isBlank())
+            return sandboxInitPoint;
+        if (initPoint != null && !initPoint.isBlank())
+            return initPoint;
+        if (checkoutUrl != null && !checkoutUrl.isBlank())
+            return checkoutUrl;
         if (config != null && config.getOnline() != null) {
             if (preferSandbox && config.getOnline().getSandboxInitPoint() != null) {
                 return config.getOnline().getSandboxInitPoint();
@@ -236,5 +344,24 @@ public class MpOrderResponse {
             return transactions.getPayments().get(0);
         }
         return null;
+    }
+
+    public String resolveAuthorizationCode() {
+        PaymentResponse first = getFirstPayment();
+        if (first != null) {
+            String code = first.resolveAuthorizationCode();
+            if (code != null && !code.isBlank()) {
+                return code;
+            }
+        }
+        return getId();
+    }
+
+    public String resolveTerminalCode() {
+        if (integrationData != null && integrationData.getApplicationId() != null
+                && !integrationData.getApplicationId().isBlank()) {
+            return integrationData.getApplicationId();
+        }
+        return "MERCADOPAGO";
     }
 }

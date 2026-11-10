@@ -63,9 +63,9 @@ credibanco:
 # Configuración Mercado Pago (ApiOrders v1/orders)
 mercadopago:
   base-url: ${MERCADOPAGO_BASE_URL:https://api.mercadopago.com}
-  access-token: ${MERCADOPAGO_ACCESS_TOKEN:APP_USR-4620466298947158-110416-9983ebe8a9924a44676dcdcd368366ed-3448107144}
+  access-token: ${MERCADOPAGO_ACCESS_TOKEN:APP_USR-7403571717392222-110918-eb6ee324e2ae87c6853697468d749eaa-3831412498}
   public-key: ${MERCADOPAGO_PUBLIC_KEY:}
-  webhook-secret: ${MERCADOPAGO_WEBHOOK_SECRET:9bf09d74e4033a869a2abcbaa098464e0d59ec4c80d945bb150d6eb01e58f92e}
+  webhook-secret: ${MERCADOPAGO_WEBHOOK_SECRET:000353afa05c0674317e3bf3b8fb6dc4d63f2523320cd6aee0137a9326eec18f}
   currency: ${MERCADOPAGO_CURRENCY:COP}
   default-return-url: ${MERCADOPAGO_DEFAULT_RETURN_URL:http://localhost:3000/checkout/payment-return}
   default-fail-url: ${MERCADOPAGO_DEFAULT_FAIL_URL:http://localhost:3000/checkout/payment-return?status=failed}

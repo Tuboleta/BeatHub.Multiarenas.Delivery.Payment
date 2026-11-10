@@ -75,9 +75,9 @@ spec:
             - name: MERCADOPAGO_BASE_URL
               value: "https://api.mercadopago.com"
             - name: MERCADOPAGO_ACCESS_TOKEN
-              value: "APP_USR-4620466298947158-110416-9983ebe8a9924a44676dcdcd368366ed-3448107144"
+              value: "APP_USR-7403571717392222-110918-eb6ee324e2ae87c6853697468d749eaa-3831412498"
             - name: MERCADOPAGO_WEBHOOK_SECRET
-              value: "9bf09d74e4033a869a2abcbaa098464e0d59ec4c80d945bb150d6eb01e58f92e"
+              value: "000353afa05c0674317e3bf3b8fb6dc4d63f2523320cd6aee0137a9326eec18f"
             - name: MERCADOPAGO_CURRENCY
               value: "COP"
             - name: MERCADOPAGO_DEFAULT_RETURN_URL

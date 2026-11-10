@@ -2,6 +2,7 @@ package com.beathub.multiarenas.delivery.payment.service;
 
 import com.beathub.multiarenas.delivery.payment.entity.LogServicio;
 import com.beathub.multiarenas.delivery.payment.repository.LogServicioRepository;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -22,6 +23,7 @@ public class IntegrationAuditService {
     private static final int MICROSERVICIO_PAYMENT = 4;
 
     private final LogServicioRepository logServicioRepository;
+    private final ObjectMapper objectMapper;
 
     public void logExternalCall(
             Integer servicioIntegracionId,
@@ -48,8 +50,8 @@ public class IntegrationAuditService {
                     .operacion(operacion)
                     .request(request)
                     .response(response)
-                    .fechaProceso(fechaProceso)
-                    .fechaRespuesta(fechaRespuesta)
+                    .fechaProceso(fechaProceso != null ? fechaProceso : LocalDateTime.now())
+                    .fechaRespuesta(fechaRespuesta != null ? fechaRespuesta : LocalDateTime.now())
                     .duracionMs(duracionMs)
                     .httpCode(httpCode)
                     .resultado(resultado)
@@ -75,5 +77,36 @@ public class IntegrationAuditService {
             String resultado
     ) {
         logExternalCall(SERVICIO_CREDIBANCO, arenaId, usuarioId, operacion, request, response, fechaProceso, fechaRespuesta, httpCode, resultado);
+    }
+
+    public void logWebhook(
+            Integer servicioIntegracionId,
+            String arenaId,
+            Long usuarioId,
+            String operacion,
+            Object requestPayload,
+            Object responsePayload,
+            LocalDateTime fechaProceso,
+            LocalDateTime fechaRespuesta,
+            Integer httpCode,
+            String resultado
+    ) {
+        String reqStr = serializeToString(requestPayload);
+        String resStr = serializeToString(responsePayload);
+        logExternalCall(servicioIntegracionId, arenaId, usuarioId, operacion, reqStr, resStr, fechaProceso, fechaRespuesta, httpCode, resultado);
+    }
+
+    private String serializeToString(Object value) {
+        if (value == null) {
+            return null;
+        }
+        if (value instanceof String str) {
+            return str;
+        }
+        try {
+            return objectMapper.writeValueAsString(value);
+        } catch (Exception e) {
+            return String.valueOf(value);
+        }
     }
 }

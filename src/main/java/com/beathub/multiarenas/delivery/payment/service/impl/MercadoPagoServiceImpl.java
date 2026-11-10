@@ -237,9 +237,10 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
         }
 
         // D. Prioridad 4: Datos del usuario autenticado en Auth Service
-        if (payerEmail == null || payerFirstName == null) {
+        UserClientResponse userInfo = null;
+        if (payerEmail == null || payerFirstName == null || payerDocNumber == null) {
             try {
-                UserClientResponse userInfo = authServiceClient.getUsuario(usuarioId).orElse(null);
+                userInfo = authServiceClient.getUsuario(usuarioId).orElse(null);
                 if (userInfo != null) {
                     if (payerEmail == null && userInfo.getEmail() != null && !userInfo.getEmail().isBlank()) {
                         payerEmail = userInfo.getEmail().trim();
@@ -253,6 +254,10 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
                     }
                     if (payerPhone == null && userInfo.getTelefono() != null && !userInfo.getTelefono().isBlank()) {
                         payerPhone = userInfo.getTelefono().trim();
+                    }
+                    if (payerDocNumber == null && userInfo.getNumeroDocumento() != null
+                            && !userInfo.getNumeroDocumento().isBlank()) {
+                        payerDocNumber = userInfo.getNumeroDocumento().trim();
                     }
                 }
             } catch (Exception ex) {
@@ -280,6 +285,20 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
                     .areaCode(payerPhoneAreaCode != null ? payerPhoneAreaCode : "57")
                     .number(payerPhone)
                     .build());
+        }
+
+        // Validación estricta anti-error Mercado Pago:
+        // Si el documento es un ssoId (UUID o formato no documento) o coincide con el ssoId del usuario,
+        // no enviarlo para evitar el error de validación 400 de Mercado Pago.
+        if (payerDocNumber != null) {
+            boolean isInvalidDoc = payerDocNumber.isBlank()
+                    || payerDocNumber.matches("^[0-9a-fA-F-]{32,36}$")
+                    || payerDocNumber.toLowerCase().startsWith("tbl_")
+                    || (userInfo != null && userInfo.getSsoId() != null && payerDocNumber.equalsIgnoreCase(userInfo.getSsoId()));
+            if (isInvalidDoc) {
+                log.warn("[MercadoPago] Documento del cliente '{}' corresponde a un identificador ssoId/UUID no admisible por Mercado Pago. Omitiendo campo identification.", payerDocNumber);
+                payerDocNumber = null;
+            }
         }
 
         if (payerDocNumber != null && !payerDocNumber.isBlank()) {
@@ -1014,7 +1033,7 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
                 .orElse(null);
 
         if (pedidoPago != null) {
-            log.info("🔔 [MercadoPago Webhook] Reconciliando pedido pago #{} (Estado actual: {}) para orden/pago MP {}",
+            log.info("[MercadoPago Webhook] Reconciliando pedido pago #{} (Estado actual: {}) para orden/pago MP {}",
                     pedidoPago.getId(), pedidoPago.getEstadoId(), orderId);
             if (orderId.matches("\\d+")
                     && (pedidoPago.getMpPaymentId() == null || !Integer.valueOf(2).equals(pedidoPago.getEstadoId()))) {
@@ -1036,7 +1055,7 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
                                 .orElse(null);
                         if (porRef != null) {
                             log.info(
-                                    "🔔 [MercadoPago Webhook] PedidoPago #{} localizado por external_reference de pago: {}",
+                                    "[MercadoPago Webhook] PedidoPago #{} localizado por external_reference de pago: {}",
                                     porRef.getId(), mpPayment.getExternalReference());
                             if (porRef.getMpPaymentId() == null || !Integer.valueOf(2).equals(porRef.getEstadoId())) {
                                 porRef.setMpPaymentId(orderId);
@@ -1060,7 +1079,7 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
                             .orElse(null);
                     if (porRef != null) {
                         log.info(
-                                "🔔 [MercadoPago Webhook] PedidoPago #{} localizado por external_reference de orden: {}",
+                                "[MercadoPago Webhook] PedidoPago #{} localizado por external_reference de orden: {}",
                                 porRef.getId(), mpOrder.getExternalReference());
                         if (porRef.getMpOrderId() == null) {
                             porRef.setMpOrderId(orderId);

@@ -35,11 +35,27 @@ public class MpPaymentDetailResponse {
     @JsonProperty("authorization_code")
     private String authorizationCode;
 
+    @JsonProperty("reference_id")
+    private String referenceId;
+
     @JsonProperty("date_approved")
     private String dateApproved;
 
     @JsonProperty("date_created")
     private String dateCreated;
+
+    public String resolveAuthorizationCode() {
+        if (referenceId != null && !referenceId.isBlank()) {
+            return referenceId;
+        }
+        if (authorizationCode != null && !authorizationCode.isBlank()) {
+            return authorizationCode;
+        }
+        if (id != null && !id.isBlank()) {
+            return id;
+        }
+        return null;
+    }
 
     public String resolveFriendlyPaymentName() {
         return MpOrderResponse.PaymentMethodInfo.resolveFriendlyName(paymentMethodId, paymentTypeId);

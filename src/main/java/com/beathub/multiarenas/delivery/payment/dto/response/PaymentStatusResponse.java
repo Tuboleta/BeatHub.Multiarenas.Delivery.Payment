@@ -25,6 +25,8 @@ public class PaymentStatusResponse {
     private String actionCode;
     private String actionCodeDescription;
     private String authCode;
+    private String autorizacion;
+    private String terminal;
     private String medioPago;
     private String errorCode;
     private String errorMessage;
@@ -34,9 +36,24 @@ public class PaymentStatusResponse {
         this.orderId = credibancoOrderId;
     }
 
+    public String getAutorizacion() {
+        if (autorizacion != null && !autorizacion.isBlank()) {
+            return autorizacion;
+        }
+        return authCode;
+    }
+
     public static class PaymentStatusResponseBuilder {
         public PaymentStatusResponseBuilder credibancoOrderId(String credibancoOrderId) {
             this.orderId = credibancoOrderId;
+            return this;
+        }
+
+        public PaymentStatusResponseBuilder autorizacion(String autorizacion) {
+            this.autorizacion = autorizacion;
+            if (this.authCode == null || this.authCode.isBlank()) {
+                this.authCode = autorizacion;
+            }
             return this;
         }
     }

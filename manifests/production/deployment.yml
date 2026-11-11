@@ -1,0 +1,99 @@
+apiVersion : apps/v1
+kind: Deployment
+metadata:
+  name: beathubmultiarenasdeliverypayment
+  namespace: multiarenas-prod
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: beathubmultiarenasdeliverypayment
+  template:
+    metadata:
+      labels:
+        app: beathubmultiarenasdeliverypayment
+    spec:
+      imagePullSecrets:
+        - name: acr-pull-secret
+      containers:
+        - name: beathubmultiarenasdeliverypayment
+          image: beathubconnectposcontainer.azurecr.io/beathubmultiarenasdeliverypayment
+          ports:
+          - containerPort: 8083
+          env:
+            - name: SERVER_PORT
+              value: "8083"
+            - name: SERVER_SERVLET_CONTEXT_PATH
+              value: "/api/v1/payment"
+            - name: SPRING_DATASOURCE_URL
+              value: "jdbc:postgresql://bhpostgresqlbiteup.postgres.database.azure.com:5432/bite_up_prod?currentSchema=payment,public"
+            - name: SPRING_DATASOURCE_USERNAME
+              value: "tbpostgresa"
+            - name: SPRING_DATASOURCE_PASSWORD
+              value: "NYz*bb*&8rrF1qxI"
+            - name: SPRING_JPA_HIBERNATE_DDL_AUTO
+              value: "validate"
+            - name: SPRING_JPA_SHOW_SQL
+              value: "false"
+            - name: SPRING_FLYWAY_ENABLED
+              value: "true"
+            - name: CORS_ALLOWED_ORIGINS
+              value: "*"
+            - name: JWT_SECRET
+              value: "404E635266556A586E3272357538782F413F4428472B4B6250645367566B5970"
+            - name: JWT_ISSUER
+              value: "beathub-auth-service"
+            - name: CREDIBANCO_BASE_URL
+              value: "https://ecouat.credibanco.com/payment/rest"
+            - name: CREDIBANCO_USERNAME
+              value: "DACASIGNAVNP61-api"
+            - name: CREDIBANCO_PASSWORD
+              value: "DACASIGNAVNP61-api"
+            - name: CREDIBANCO_SECRET_KEY_HMAC
+              value: "TEST_CALLBACK_KEY"
+            - name: CREDIBANCO_CURRENCY_CODE
+              value: "170"
+            - name: CREDIBANCO_MCC_TRAVEL_AGENCY
+              value: "false"
+            - name: CREDIBANCO_PROXY_BASE_URL
+              value: "https://ecouat.credibanco.com/proxy/rest"
+            - name: SERVICES_ORDERING_URL
+              value: "http://beathubmultiarenasdeliveryordering.multiarenas-prod.svc.cluster.local/api/v1/ordering"
+            - name: SERVICES_AUTH_URL
+              value: "http://beathubmultiarenasdeliveryauth.multiarenas-prod.svc.cluster.local/api/v1/auth"
+            - name: SERVICES_NOTIFICATION_URL
+              value: "http://beathubmultiarenasdeliverynotification.multiarenas-prod.svc.cluster.local/api/v1/notifications"
+            - name: PWA_BASE_URL
+              value: "https://biteup.beat-hub.com"
+            - name: CREDIBANCO_DEFAULT_RETURN_URL
+              value: "https://biteup.beat-hub.com/checkout/payment-return"
+            - name: CREDIBANCO_DEFAULT_FAIL_URL
+              value: "https://biteup.beat-hub.com/checkout/payment-return?status=failed"
+            - name: CREDIBANCO_PUBLIC_WEBHOOK_URL
+              value: "https://service-bup.beat.hub.com/api/v1/payment/webhook/credibanco/callback"
+            - name: PAYMENT_DEFAULT_GATEWAY
+              value: "MERCADOPAGO"
+            - name: MERCADOPAGO_BASE_URL
+              value: "https://api.mercadopago.com"
+            - name: MERCADOPAGO_ACCESS_TOKEN
+              value: "APP_USR-7403571717392222-110918-eb6ee324e2ae87c6853697468d749eaa-3831412498"
+            - name: MERCADOPAGO_WEBHOOK_SECRET
+              value: "000353afa05c0674317e3bf3b8fb6dc4d63f2523320cd6aee0137a9326eec18f"
+            - name: MERCADOPAGO_CURRENCY
+              value: "COP"
+            - name: MERCADOPAGO_DEFAULT_RETURN_URL
+              value: "https://biteup.beat-hub.com/checkout/payment-return"
+            - name: MERCADOPAGO_DEFAULT_FAIL_URL
+              value: "https://biteup.beat-hub.com/checkout/payment-return?status=failed"
+            - name: MERCADOPAGO_PUBLIC_WEBHOOK_URL
+              value: "https://service-bup.beat.hub.com/api/v1/payment/webhook/mercadopago"
+            - name: PAYMENT_SONDA_ENABLED
+              value: "false"
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "512Mi"          
+            limits:
+              cpu: "1"
+              memory: "1Gi"
+

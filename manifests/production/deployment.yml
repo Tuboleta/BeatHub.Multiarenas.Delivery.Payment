@@ -1,23 +1,23 @@
 apiVersion : apps/v1
 kind: Deployment
 metadata:
-  name: beathubmultiarenasdeliverypayment
+  name: beathubmultiarenasdeliverypayment-prod
   namespace: multiarenas-prod
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: beathubmultiarenasdeliverypayment
+      app: beathubmultiarenasdeliverypayment-prod
   template:
     metadata:
       labels:
-        app: beathubmultiarenasdeliverypayment
+        app: beathubmultiarenasdeliverypayment-prod
     spec:
       imagePullSecrets:
         - name: acr-pull-secret
       containers:
-        - name: beathubmultiarenasdeliverypayment
-          image: beathubconnectposcontainer.azurecr.io/beathubmultiarenasdeliverypayment
+        - name: beathubmultiarenasdeliverypayment-prod
+          image: beathubconnectposcontainer.azurecr.io/beathubmultiarenasdeliverypayment-prod
           ports:
           - containerPort: 8083
           env:
@@ -58,11 +58,11 @@ spec:
             - name: CREDIBANCO_PROXY_BASE_URL
               value: "https://ecouat.credibanco.com/proxy/rest"
             - name: SERVICES_ORDERING_URL
-              value: "http://beathubmultiarenasdeliveryordering.multiarenas-prod.svc.cluster.local/api/v1/ordering"
+              value: "http://beathubmultiarenasdeliveryordering-prod.multiarenas-prod.svc.cluster.local/api/v1/ordering"
             - name: SERVICES_AUTH_URL
-              value: "http://beathubmultiarenasdeliveryauth.multiarenas-prod.svc.cluster.local/api/v1/auth"
+              value: "http://beathubmultiarenasdeliveryauth-prod.multiarenas-prod.svc.cluster.local/api/v1/auth"
             - name: SERVICES_NOTIFICATION_URL
-              value: "http://beathubmultiarenasdeliverynotification.multiarenas-prod.svc.cluster.local/api/v1/notifications"
+              value: "http://beathubmultiarenasdeliverynotification-prod.multiarenas-prod.svc.cluster.local/api/v1/notifications"
             - name: PWA_BASE_URL
               value: "https://biteup.beat-hub.com"
             - name: CREDIBANCO_DEFAULT_RETURN_URL

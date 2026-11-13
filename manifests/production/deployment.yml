@@ -64,13 +64,13 @@ spec:
             - name: SERVICES_NOTIFICATION_URL
               value: "http://beathubmultiarenasdeliverynotification.multiarenas-prod.svc.cluster.local/api/v1/notifications"
             - name: PWA_BASE_URL
-              value: "https://biteup.beat-hub.com"
+              value: "https://biteup.daviarena.com"
             - name: CREDIBANCO_DEFAULT_RETURN_URL
-              value: "https://biteup.beat-hub.com/checkout/payment-return"
+              value: "https://biteup.daviarena.com/checkout/payment-return"
             - name: CREDIBANCO_DEFAULT_FAIL_URL
-              value: "https://biteup.beat-hub.com/checkout/payment-return?status=failed"
+              value: "https://biteup.daviarena.com/checkout/payment-return?status=failed"
             - name: CREDIBANCO_PUBLIC_WEBHOOK_URL
-              value: "https://service-bup.beat.hub.com/api/v1/payment/webhook/credibanco/callback"
+              value: "https://service-bup.daviarena.com/api/v1/payment/webhook/credibanco/callback"
             - name: PAYMENT_DEFAULT_GATEWAY
               value: "MERCADOPAGO"
             - name: MERCADOPAGO_BASE_URL
@@ -82,11 +82,11 @@ spec:
             - name: MERCADOPAGO_CURRENCY
               value: "COP"
             - name: MERCADOPAGO_DEFAULT_RETURN_URL
-              value: "https://biteup.beat-hub.com/checkout/payment-return"
+              value: "https://biteup.daviarena.com/checkout/payment-return"
             - name: MERCADOPAGO_DEFAULT_FAIL_URL
-              value: "https://biteup.beat-hub.com/checkout/payment-return?status=failed"
+              value: "https://biteup.daviarena.com/checkout/payment-return?status=failed"
             - name: MERCADOPAGO_PUBLIC_WEBHOOK_URL
-              value: "https://service-bup.beat.hub.com/api/v1/payment/webhook/mercadopago"
+              value: "https://service-bup.daviarena.com/api/v1/payment/webhook/mercadopago"
             - name: PAYMENT_SONDA_ENABLED
               value: "false"
           resources:

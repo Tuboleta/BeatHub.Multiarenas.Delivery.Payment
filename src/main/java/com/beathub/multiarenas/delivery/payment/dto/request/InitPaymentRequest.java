@@ -50,6 +50,11 @@ public class InitPaymentRequest {
     // Información del comprador / cliente real
     private PayerDto payer;
 
+    // Información adicional para prevención de fraude y homologación Mercado Pago (Datos de industria)
+    @JsonProperty("additional_info")
+    @JsonAlias({"additionalInfo"})
+    private AdditionalInfoDto additionalInfo;
+
     // Lista de ítems detallados de la compra (homologación Mercado Pago)
     private List<ItemDto> items;
 
@@ -82,6 +87,72 @@ public class InitPaymentRequest {
         @JsonAlias({"identificationNumber", "numeroDocumento"})
         private String identificationNumber;
         private AddressDto address;
+
+        @JsonProperty("registration_date")
+        @JsonAlias({"registrationDate", "fechaRegistro"})
+        private String registrationDate;
+
+        @JsonProperty("is_prime_user")
+        @JsonAlias({"isPrimeUser", "primeUser", "esPrime"})
+        private Boolean isPrimeUser;
+
+        @JsonProperty("is_first_purchase_online")
+        @JsonAlias({"isFirstPurchaseOnline", "firstPurchaseOnline", "primeraCompra"})
+        private Boolean isFirstPurchaseOnline;
+
+        @JsonProperty("authentication_type")
+        @JsonAlias({"authenticationType", "tipoAutenticacion"})
+        private String authenticationType;
+
+        @JsonProperty("last_purchase")
+        @JsonAlias({"lastPurchase", "ultimaCompra"})
+        private String lastPurchase;
+    }
+
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public static class AdditionalInfoDto {
+        private AdditionalPayerDto payer;
+        @JsonProperty("ip_address")
+        @JsonAlias({"ipAddress", "ip"})
+        private String ipAddress;
+    }
+
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public static class AdditionalPayerDto {
+        @JsonProperty("first_name")
+        @JsonAlias({"firstName", "nombres"})
+        private String firstName;
+        @JsonProperty("last_name")
+        @JsonAlias({"lastName", "apellidos"})
+        private String lastName;
+        private AddressDto address;
+        private String phone;
+        @JsonProperty("phone_area_code")
+        @JsonAlias({"phoneAreaCode", "areaCode"})
+        private String phoneAreaCode;
+        @JsonProperty("registration_date")
+        @JsonAlias({"registrationDate", "fechaRegistro"})
+        private String registrationDate;
+        @JsonProperty("is_prime_user")
+        @JsonAlias({"isPrimeUser", "primeUser", "esPrime"})
+        private Boolean isPrimeUser;
+        @JsonProperty("is_first_purchase_online")
+        @JsonAlias({"isFirstPurchaseOnline", "firstPurchaseOnline", "primeraCompra"})
+        private Boolean isFirstPurchaseOnline;
+        @JsonProperty("authentication_type")
+        @JsonAlias({"authenticationType", "tipoAutenticacion"})
+        private String authenticationType;
+        @JsonProperty("last_purchase")
+        @JsonAlias({"lastPurchase", "ultimaCompra"})
+        private String lastPurchase;
     }
 
     @Data

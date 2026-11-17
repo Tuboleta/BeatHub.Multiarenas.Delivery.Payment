@@ -103,6 +103,26 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(HttpStatus.BAD_GATEWAY).body(error);
     }
 
+    @ExceptionHandler(MercadoPagoApiException.class)
+    public ResponseEntity<ErrorResponse> handleMercadoPagoApiException(MercadoPagoApiException ex, HttpServletRequest req) {
+        log.error("MercadoPagoApiException [{}] | Path: {}: {}", ex.getErrorCode(), req.getRequestURI(), ex.getMessage());
+        appLoggerService.logException(ex, "MercadoPagoApiException [" + ex.getErrorCode() + "] | Path: " + req.getRequestURI(), null);
+
+        Map<String, String> details = new HashMap<>();
+        details.put("errorCode", ex.getErrorCode() != null ? ex.getErrorCode() : "MP_ERROR");
+
+        ErrorResponse error = ErrorResponse.builder()
+                .success(false)
+                .status(HttpStatus.BAD_REQUEST.value())
+                .error("Error pasarela Mercado Pago")
+                .message(ex.getMessage())
+                .errors(details)
+                .path(req.getRequestURI())
+                .timestamp(LocalDateTime.now())
+                .build();
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(error);
+    }
+
     @ExceptionHandler(BadRequestException.class)
     public ResponseEntity<ErrorResponse> handleBadRequest(BadRequestException ex, HttpServletRequest req) {
         appLoggerService.logException(ex, "BadRequest | Path: " + req.getRequestURI(), null);

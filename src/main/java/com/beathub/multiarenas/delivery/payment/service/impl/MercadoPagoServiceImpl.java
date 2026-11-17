@@ -19,6 +19,8 @@ import com.beathub.multiarenas.delivery.payment.service.MercadoPagoService;
 import com.beathub.multiarenas.delivery.payment.service.IntegrationAuditService;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.PersistenceContext;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -47,6 +49,9 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
     private final MercadoPagoProperties mercadoPagoProperties;
     private final HmacSignatureService hmacSignatureService;
     private final ObjectMapper objectMapper;
+
+    @PersistenceContext
+    private EntityManager entityManager;
 
     private static final int PASARELA_MERCADOPAGO_ID = IntegrationAuditService.SERVICIO_MERCADOPAGO;
 
@@ -167,10 +172,20 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
                 payerFirstName = p.getFirstName().trim();
             if (p.getLastName() != null && !p.getLastName().isBlank())
                 payerLastName = p.getLastName().trim();
-            if (p.getName() != null && !p.getName().isBlank() && payerFirstName == null)
-                payerFirstName = p.getName().trim();
             if (p.getSurname() != null && !p.getSurname().isBlank() && payerLastName == null)
                 payerLastName = p.getSurname().trim();
+            if (p.getName() != null && !p.getName().isBlank()) {
+                String fullName = p.getName().trim();
+                if (payerFirstName == null && payerLastName == null) {
+                    String[] parts = fullName.split("\\s+", 2);
+                    payerFirstName = parts[0];
+                    if (parts.length > 1) {
+                        payerLastName = parts[1];
+                    }
+                } else if (payerFirstName == null) {
+                    payerFirstName = fullName;
+                }
+            }
             if (p.getPhone() != null && !p.getPhone().isBlank())
                 payerPhone = p.getPhone().trim();
             if (p.getPhoneAreaCode() != null && !p.getPhoneAreaCode().isBlank())
@@ -238,9 +253,9 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
 
         // D. Prioridad 4: Datos del usuario autenticado en Auth Service
         UserClientResponse userInfo = null;
-        if (payerEmail == null || payerFirstName == null || payerDocNumber == null) {
+        if (effectiveUsuarioId > 0) {
             try {
-                userInfo = authServiceClient.getUsuario(usuarioId).orElse(null);
+                userInfo = authServiceClient.getUsuario(effectiveUsuarioId).orElse(null);
                 if (userInfo != null) {
                     if (payerEmail == null && userInfo.getEmail() != null && !userInfo.getEmail().isBlank()) {
                         payerEmail = userInfo.getEmail().trim();
@@ -259,10 +274,69 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
                             && !userInfo.getNumeroDocumento().isBlank()) {
                         payerDocNumber = userInfo.getNumeroDocumento().trim();
                     }
+                    if (payerAddress == null && userInfo.getDireccion() != null && !userInfo.getDireccion().isBlank()) {
+                        String dir = userInfo.getDireccion().trim();
+                        String stName = dir;
+                        String stNum = null;
+                        java.util.regex.Matcher m = java.util.regex.Pattern
+                                .compile("^(.*?)(?:#|No\\.?|N°)\\s*(.*)$", java.util.regex.Pattern.CASE_INSENSITIVE)
+                                .matcher(dir);
+                        if (m.find()) {
+                            String p1 = m.group(1).trim();
+                            String p2 = m.group(2).trim();
+                            if (!p1.isEmpty())
+                                stName = p1;
+                            if (!p2.isEmpty())
+                                stNum = p2;
+                        }
+                        payerAddress = MpOrderRequest.Address.builder()
+                                .streetName(stName)
+                                .streetNumber(stNum)
+                                .zipCode(userInfo.getCodigoPostal())
+                                .city(userInfo.getCiudad())
+                                .build();
+                    }
                 }
             } catch (Exception ex) {
                 log.warn("No se pudo obtener datos del usuario desde Auth: {}", ex.getMessage());
             }
+        }
+
+        // E. Prioridad 5: additional_info provisto explícitamente en el request
+        if (request.getAdditionalInfo() != null && request.getAdditionalInfo().getPayer() != null) {
+            var ap = request.getAdditionalInfo().getPayer();
+            if (ap.getAddress() != null && payerAddress == null) {
+                payerAddress = MpOrderRequest.Address.builder()
+                        .zipCode(ap.getAddress().getZipCode())
+                        .streetName(ap.getAddress().getStreetName())
+                        .streetNumber(ap.getAddress().getStreetNumber())
+                        .neighborhood(ap.getAddress().getNeighborhood())
+                        .city(ap.getAddress().getCityName())
+                        .build();
+            }
+            if (ap.getPhone() != null && !ap.getPhone().isBlank() && payerPhone == null) {
+                payerPhone = ap.getPhone().trim();
+            }
+            if (ap.getPhoneAreaCode() != null && !ap.getPhoneAreaCode().isBlank()
+                    && (payerPhoneAreaCode == null || "57".equals(payerPhoneAreaCode))) {
+                payerPhoneAreaCode = ap.getPhoneAreaCode().trim();
+            }
+        }
+
+        // Si el primer nombre contiene el nombre completo y no hay apellido, separar
+        // adecuadamente
+        if (payerFirstName != null && (payerLastName == null || payerLastName.isBlank())) {
+            String[] parts = payerFirstName.trim().split("\\s+", 2);
+            if (parts.length > 1) {
+                payerFirstName = parts[0];
+                payerLastName = parts[1];
+            }
+        }
+
+        // Si aún falta apellido, intentar recuperarlo de los datos de usuario en Auth
+        if ((payerLastName == null || payerLastName.isBlank()) && userInfo != null && userInfo.getApellidos() != null
+                && !userInfo.getApellidos().isBlank()) {
+            payerLastName = userInfo.getApellidos().trim();
         }
 
         if (payerEmail == null || payerEmail.isBlank()) {
@@ -272,7 +346,15 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
             payerFirstName = "Cliente";
         }
         if (payerLastName == null || payerLastName.isBlank()) {
-            payerLastName = "Registrado";
+            payerLastName = "";
+        }
+
+        // Sanitizar teléfono para PSE y Mercado Pago (separar estrictamente código de
+        // área y número local sin prefijos duplicados)
+        if (payerPhone != null && !payerPhone.isBlank()) {
+            String[] cleanPhone = sanitizePhone(payerPhone, payerPhoneAreaCode);
+            payerPhoneAreaCode = cleanPhone[0];
+            payerPhone = cleanPhone[1];
         }
 
         MpOrderRequest.Payer.PayerBuilder payerBuilder = MpOrderRequest.Payer.builder()
@@ -282,34 +364,39 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
 
         if (payerPhone != null && !payerPhone.isBlank()) {
             payerBuilder.phone(MpOrderRequest.Phone.builder()
-                    .areaCode(payerPhoneAreaCode != null ? payerPhoneAreaCode : "57")
+                    .areaCode(payerPhoneAreaCode)
                     .number(payerPhone)
                     .build());
         }
 
+        if (payerAddress != null) {
+            payerBuilder.address(payerAddress);
+        }
+
         // Validación estricta anti-error Mercado Pago:
-        // Si el documento es un ssoId (UUID o formato no documento) o coincide con el ssoId del usuario,
+        // Si el documento es un ssoId (UUID o formato no documento) o coincide con el
+        // ssoId del usuario,
         // no enviarlo para evitar el error de validación 400 de Mercado Pago.
         if (payerDocNumber != null) {
             boolean isInvalidDoc = payerDocNumber.isBlank()
                     || payerDocNumber.matches("^[0-9a-fA-F-]{32,36}$")
                     || payerDocNumber.toLowerCase().startsWith("tbl_")
-                    || (userInfo != null && userInfo.getSsoId() != null && payerDocNumber.equalsIgnoreCase(userInfo.getSsoId()));
+                    || (userInfo != null && userInfo.getSsoId() != null
+                            && payerDocNumber.equalsIgnoreCase(userInfo.getSsoId()));
             if (isInvalidDoc) {
-                log.warn("[MercadoPago] Documento del cliente '{}' corresponde a un identificador ssoId/UUID no admisible por Mercado Pago. Omitiendo campo identification.", payerDocNumber);
+                log.warn(
+                        "[MercadoPago] Documento del cliente '{}' corresponde a un identificador ssoId/UUID no admisible por Mercado Pago. Omitiendo campo identification.",
+                        payerDocNumber);
                 payerDocNumber = null;
             }
         }
 
         if (payerDocNumber != null && !payerDocNumber.isBlank()) {
             payerBuilder.identification(MpOrderRequest.Identification.builder()
-                    .type(payerDocType != null ? payerDocType : "CC")
+                    .type(normalizeIdentificationType(payerDocType,
+                            userInfo != null ? userInfo.getTipoDocumentoId() : null))
                     .number(payerDocNumber)
                     .build());
-        }
-
-        if (payerAddress != null) {
-            payerBuilder.address(payerAddress);
         }
 
         MpOrderRequest.Payer payer = payerBuilder.build();
@@ -460,6 +547,173 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
                 .online(onlineConfig)
                 .build();
 
+        // 5. Construir additional_info (Datos de industria recomendados para
+        // homologación Checkout Pro)
+        String payerRegistrationDate = null;
+        if (request.getAdditionalInfo() != null && request.getAdditionalInfo().getPayer() != null
+                && request.getAdditionalInfo().getPayer().getRegistrationDate() != null) {
+            payerRegistrationDate = request.getAdditionalInfo().getPayer().getRegistrationDate().trim();
+        } else if (request.getPayer() != null && request.getPayer().getRegistrationDate() != null) {
+            payerRegistrationDate = request.getPayer().getRegistrationDate().trim();
+        } else if (request.getExtraParams() != null && request.getExtraParams().get("registration_date") != null) {
+            payerRegistrationDate = String.valueOf(request.getExtraParams().get("registration_date")).trim();
+        } else if (request.getExtraParams() != null && request.getExtraParams().get("registrationDate") != null) {
+            payerRegistrationDate = String.valueOf(request.getExtraParams().get("registrationDate")).trim();
+        } else if (userInfo != null && userInfo.getCreacionFecha() != null) {
+            payerRegistrationDate = userInfo.getCreacionFecha().atZone(java.time.ZoneId.of("America/Bogota"))
+                    .format(java.time.format.DateTimeFormatter.ISO_OFFSET_DATE_TIME);
+        } else if (effectiveUsuarioId > 0) {
+            payerRegistrationDate = obtenerFechaRegistroUsuarioAuth(effectiveUsuarioId);
+        }
+
+        Boolean isPrimeUser = null;
+        if (request.getAdditionalInfo() != null && request.getAdditionalInfo().getPayer() != null
+                && request.getAdditionalInfo().getPayer().getIsPrimeUser() != null) {
+            isPrimeUser = request.getAdditionalInfo().getPayer().getIsPrimeUser();
+        } else if (request.getPayer() != null && request.getPayer().getIsPrimeUser() != null) {
+            isPrimeUser = request.getPayer().getIsPrimeUser();
+        } else if (request.getExtraParams() != null && request.getExtraParams().containsKey("is_prime_user")) {
+            isPrimeUser = Boolean.parseBoolean(String.valueOf(request.getExtraParams().get("is_prime_user")));
+        } else if (request.getExtraParams() != null && request.getExtraParams().containsKey("isPrimeUser")) {
+            isPrimeUser = Boolean.parseBoolean(String.valueOf(request.getExtraParams().get("isPrimeUser")));
+        }
+
+        Boolean isFirstPurchaseOnline = null;
+        String payerLastPurchase = null;
+
+        if (request.getAdditionalInfo() != null && request.getAdditionalInfo().getPayer() != null) {
+            if (request.getAdditionalInfo().getPayer().getIsFirstPurchaseOnline() != null) {
+                isFirstPurchaseOnline = request.getAdditionalInfo().getPayer().getIsFirstPurchaseOnline();
+            }
+            if (request.getAdditionalInfo().getPayer().getLastPurchase() != null) {
+                payerLastPurchase = request.getAdditionalInfo().getPayer().getLastPurchase().trim();
+            }
+        }
+        if (request.getPayer() != null) {
+            if (isFirstPurchaseOnline == null && request.getPayer().getIsFirstPurchaseOnline() != null) {
+                isFirstPurchaseOnline = request.getPayer().getIsFirstPurchaseOnline();
+            }
+            if (payerLastPurchase == null && request.getPayer().getLastPurchase() != null) {
+                payerLastPurchase = request.getPayer().getLastPurchase().trim();
+            }
+        }
+        if (request.getExtraParams() != null) {
+            if (isFirstPurchaseOnline == null && request.getExtraParams().containsKey("is_first_purchase_online")) {
+                isFirstPurchaseOnline = Boolean
+                        .parseBoolean(String.valueOf(request.getExtraParams().get("is_first_purchase_online")));
+            }
+            if (isFirstPurchaseOnline == null && request.getExtraParams().containsKey("isFirstPurchaseOnline")) {
+                isFirstPurchaseOnline = Boolean
+                        .parseBoolean(String.valueOf(request.getExtraParams().get("isFirstPurchaseOnline")));
+            }
+            if (payerLastPurchase == null && request.getExtraParams().get("last_purchase") != null) {
+                payerLastPurchase = String.valueOf(request.getExtraParams().get("last_purchase")).trim();
+            }
+            if (payerLastPurchase == null && request.getExtraParams().get("lastPurchase") != null) {
+                payerLastPurchase = String.valueOf(request.getExtraParams().get("lastPurchase")).trim();
+            }
+        }
+
+        if (effectiveUsuarioId > 0) {
+            final Long currentPagoId = pedidoPago.getId();
+            List<PedidoPago> prevPagos = pedidoPagoRepository.findByUsuarioId(effectiveUsuarioId);
+            long approvedCount = 0;
+            PedidoPago lastApprovedPago = null;
+
+            for (PedidoPago p : prevPagos) {
+                if (p.getId() != null && !p.getId().equals(currentPagoId)
+                        && Integer.valueOf(PedidoPago.ESTADO_APROBADO).equals(p.getEstadoId())) {
+                    approvedCount++;
+                    if (lastApprovedPago == null || (p.getCreacionFecha() != null
+                            && (lastApprovedPago.getCreacionFecha() == null
+                                    || p.getCreacionFecha().isAfter(lastApprovedPago.getCreacionFecha())))) {
+                        lastApprovedPago = p;
+                    }
+                }
+            }
+
+            if (isFirstPurchaseOnline == null) {
+                isFirstPurchaseOnline = (approvedCount == 0);
+            }
+
+            if (payerLastPurchase == null && lastApprovedPago != null && lastApprovedPago.getCreacionFecha() != null) {
+                payerLastPurchase = lastApprovedPago.getCreacionFecha().atZone(java.time.ZoneId.of("America/Bogota"))
+                        .format(java.time.format.DateTimeFormatter.ISO_OFFSET_DATE_TIME);
+            }
+        }
+
+        // Fecha de registro del pagador: Proviene estrictamente del registro del
+        // usuario (auth.usuario.creacion_fecha)
+        if (payerRegistrationDate == null && effectiveUsuarioId > 0) {
+            payerRegistrationDate = obtenerFechaRegistroUsuarioAuth(effectiveUsuarioId);
+        }
+
+        // Usuario registrado / prime (Recomendado en Checklist Homologación)
+        if (isPrimeUser == null) {
+            isPrimeUser = (effectiveUsuarioId > 0);
+        }
+
+        // Primera compra online (Recomendado en Checklist Homologación)
+        if (isFirstPurchaseOnline == null) {
+            isFirstPurchaseOnline = (effectiveUsuarioId <= 0);
+        }
+
+        String authenticationType = null;
+        if (request.getAdditionalInfo() != null && request.getAdditionalInfo().getPayer() != null
+                && request.getAdditionalInfo().getPayer().getAuthenticationType() != null) {
+            authenticationType = request.getAdditionalInfo().getPayer().getAuthenticationType().trim();
+        } else if (request.getPayer() != null && request.getPayer().getAuthenticationType() != null) {
+            authenticationType = request.getPayer().getAuthenticationType().trim();
+        } else if (request.getExtraParams() != null && request.getExtraParams().get("authentication_type") != null) {
+            authenticationType = String.valueOf(request.getExtraParams().get("authentication_type")).trim();
+        } else if (request.getExtraParams() != null && request.getExtraParams().get("authenticationType") != null) {
+            authenticationType = String.valueOf(request.getExtraParams().get("authenticationType")).trim();
+        } else if (userInfo != null && userInfo.getSsoProvider() != null && !userInfo.getSsoProvider().isBlank()) {
+            authenticationType = userInfo.getSsoProvider().trim();
+        }
+
+        // Mercado Pago Orders API exige para 'payer.authentication_type' uno de los
+        // valores enum: 'MOBILE' o 'WEB'
+        String normalizedAuthType = "WEB";
+        if (authenticationType != null && !authenticationType.isBlank()) {
+            String upper = authenticationType.toUpperCase();
+            if (upper.contains("MOBILE") || upper.contains("APP") || upper.contains("ANDROID")
+                    || upper.contains("IOS")) {
+                normalizedAuthType = "MOBILE";
+            } else {
+                normalizedAuthType = "WEB";
+            }
+        }
+
+        String clientIp = null;
+        if (request.getAdditionalInfo() != null && request.getAdditionalInfo().getIpAddress() != null) {
+            clientIp = request.getAdditionalInfo().getIpAddress().trim();
+        } else if (request.getExtraParams() != null && request.getExtraParams().get("ip_address") != null) {
+            clientIp = String.valueOf(request.getExtraParams().get("ip_address")).trim();
+        } else if (request.getExtraParams() != null && request.getExtraParams().get("ipAddress") != null) {
+            clientIp = String.valueOf(request.getExtraParams().get("ipAddress")).trim();
+        }
+
+        // Construir additional_info según el esquema estricto de Mercado Pago Orders
+        // API (v1/orders)
+        // Solo permite propiedades planas como 'payer.registration_date',
+        // 'payer.authentication_type', etc.
+        Map<String, Object> additionalInfo = new LinkedHashMap<>();
+        if (payerRegistrationDate != null && !payerRegistrationDate.isBlank()) {
+            additionalInfo.put("payer.registration_date", payerRegistrationDate);
+        }
+        additionalInfo.put("payer.authentication_type", normalizedAuthType);
+        additionalInfo.put("payer.is_prime_user", isPrimeUser != null ? isPrimeUser : false);
+        additionalInfo.put("payer.is_first_purchase_online",
+                isFirstPurchaseOnline != null ? isFirstPurchaseOnline : true);
+        if (payerLastPurchase != null && !payerLastPurchase.isBlank()) {
+            additionalInfo.put("payer.last_purchase", payerLastPurchase);
+        }
+        String sanitizedIp = sanitizeIpAddress(clientIp);
+        if (sanitizedIp != null) {
+            additionalInfo.put("payer.ip_address", sanitizedIp);
+        }
+
         MpOrderRequest orderReq = MpOrderRequest.builder()
                 .type("online")
                 .processingMode("manual")
@@ -470,6 +724,7 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
                         : "Pago Pedido " + request.getPedidoId() + " DAVIarena")
                 .items(mpItems)
                 .payer(payer)
+                .additionalInfo(additionalInfo.isEmpty() ? null : additionalInfo)
                 .config(config)
                 .build();
 
@@ -1405,5 +1660,147 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
             case 26, 5 -> "ANULADO";
             default -> "ESTADO_" + estadoId;
         };
+    }
+
+    private String sanitizeIpAddress(String ip) {
+        if (ip == null || ip.isBlank() || "unknown".equalsIgnoreCase(ip.trim())) {
+            return null;
+        }
+        String clean = ip.trim();
+        if (clean.contains(",")) {
+            clean = clean.split(",")[0].trim();
+        }
+        if (clean.startsWith("::ffff:")) {
+            clean = clean.substring(7).trim();
+        }
+        if ("::1".equals(clean) || "localhost".equalsIgnoreCase(clean)) {
+            clean = "127.0.0.1";
+        }
+        if (clean.contains(":") && clean.indexOf(':') == clean.lastIndexOf(':')) {
+            clean = clean.substring(0, clean.indexOf(':')).trim();
+        }
+        java.util.regex.Pattern ipv4Pattern = java.util.regex.Pattern.compile(
+                "^((25[0-5]|(2[0-4]|1\\d|[1-9]|)\\d)\\.){3}(25[0-5]|(2[0-4]|1\\d|[1-9]|)\\d)$");
+        if (ipv4Pattern.matcher(clean).matches()) {
+            return clean;
+        }
+        if (clean.length() >= 7 && clean.contains(":") && !clean.contains(" ")) {
+            return clean;
+        }
+        return null;
+    }
+
+    private String[] sanitizePhone(String phone, String areaCode) {
+        String cleanArea = (areaCode != null && !areaCode.isBlank()) ? areaCode.replaceAll("\\D", "") : "57";
+        if (cleanArea.isBlank()) {
+            cleanArea = "57";
+        }
+        if (phone == null || phone.isBlank()) {
+            return new String[] { cleanArea, null };
+        }
+        String digits = phone.replaceAll("\\D", "");
+        if (digits.startsWith(cleanArea) && digits.length() > cleanArea.length() + 6) {
+            digits = digits.substring(cleanArea.length());
+        }
+        return new String[] { cleanArea, digits.isBlank() ? null : digits };
+    }
+
+    private String normalizeIdentificationType(String docType, Integer tipoDocId) {
+        if (docType != null && !docType.isBlank()) {
+            String clean = docType.trim().toUpperCase();
+            if ("PP".equals(clean) || "PASAPORTE".equals(clean) || "PASSPORT".equals(clean) || "PA".equals(clean)) {
+                return "PAS";
+            }
+            if ("CC".equals(clean) || "CEDULA".equals(clean) || "CÉDULA".equals(clean) || "1".equals(clean)) {
+                return "CC";
+            }
+            if ("CE".equals(clean) || "CEDULA_EXTRANJERIA".equals(clean) || "EXTRANJERIA".equals(clean)
+                    || "2".equals(clean)) {
+                return "CE";
+            }
+            if ("NIT".equals(clean) || "RUT".equals(clean) || "4".equals(clean)) {
+                return "NIT";
+            }
+            if ("TI".equals(clean) || "TARJETA_IDENTIDAD".equals(clean) || "TARJETA IDENTIDAD".equals(clean)
+                    || "5".equals(clean)) {
+                return "TI";
+            }
+            if ("RC".equals(clean) || "REGISTRO_CIVIL".equals(clean) || "REGISTRO CIVIL".equals(clean)
+                    || "6".equals(clean)) {
+                return "RC";
+            }
+            if ("TE".equals(clean)) {
+                return "TE";
+            }
+            if ("DI".equals(clean) || "DNI".equals(clean)) {
+                return "DI";
+            }
+            if ("OTRO".equals(clean) || "OTHER".equals(clean)) {
+                return "Otro";
+            }
+            // Valores estrictos soportados por Mercado Pago Orders API:
+            // 'CC', 'CE', 'NIT', 'Otro', 'RC', 'TI', 'TE', 'PAS', 'DI'
+            if ("CC".equalsIgnoreCase(clean))
+                return "CC";
+            if ("CE".equalsIgnoreCase(clean))
+                return "CE";
+            if ("NIT".equalsIgnoreCase(clean))
+                return "NIT";
+            if ("RC".equalsIgnoreCase(clean))
+                return "RC";
+            if ("TI".equalsIgnoreCase(clean))
+                return "TI";
+            if ("TE".equalsIgnoreCase(clean))
+                return "TE";
+            if ("PAS".equalsIgnoreCase(clean))
+                return "PAS";
+            if ("DI".equalsIgnoreCase(clean))
+                return "DI";
+            if ("OTRO".equalsIgnoreCase(clean))
+                return "Otro";
+        }
+
+        if (tipoDocId != null) {
+            return switch (tipoDocId) {
+                case 1 -> "CC";
+                case 2 -> "CE";
+                case 3 -> "PAS";
+                case 4 -> "NIT";
+                case 5 -> "TI";
+                case 6 -> "RC";
+                default -> "CC";
+            };
+        }
+
+        return "CC";
+    }
+
+    private String obtenerFechaRegistroUsuarioAuth(Long usuarioId) {
+        if (entityManager == null || usuarioId == null || usuarioId <= 0) {
+            return null;
+        }
+        try {
+            List<?> result = entityManager.createNativeQuery(
+                    "SELECT creacion_fecha FROM auth.usuario WHERE id = :uid").setParameter("uid", usuarioId)
+                    .getResultList();
+            if (result != null && !result.isEmpty() && result.get(0) != null) {
+                Object val = result.get(0);
+                if (val instanceof java.sql.Timestamp ts) {
+                    return ts.toInstant().atZone(java.time.ZoneId.of("America/Bogota"))
+                            .format(java.time.format.DateTimeFormatter.ISO_OFFSET_DATE_TIME);
+                } else if (val instanceof java.time.LocalDateTime ldt) {
+                    return ldt.atZone(java.time.ZoneId.of("America/Bogota"))
+                            .format(java.time.format.DateTimeFormatter.ISO_OFFSET_DATE_TIME);
+                } else if (val instanceof java.time.OffsetDateTime odt) {
+                    return odt.format(java.time.format.DateTimeFormatter.ISO_OFFSET_DATE_TIME);
+                } else {
+                    return val.toString();
+                }
+            }
+        } catch (Exception ex) {
+            log.warn("No se pudo consultar auth.usuario.creacion_fecha para usuarioId {}: {}", usuarioId,
+                    ex.getMessage());
+        }
+        return null;
     }
 }

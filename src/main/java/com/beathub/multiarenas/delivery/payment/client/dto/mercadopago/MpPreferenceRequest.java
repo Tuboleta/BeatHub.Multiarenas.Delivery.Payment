@@ -23,6 +23,9 @@ public class MpPreferenceRequest {
 
     private Payer payer;
 
+    @JsonProperty("additional_info")
+    private AdditionalInfo additionalInfo;
+
     @JsonProperty("back_urls")
     private BackUrls backUrls;
 
@@ -114,6 +117,46 @@ public class MpPreferenceRequest {
         private String streetName;
         @JsonProperty("street_number")
         private String streetNumber;
+        @JsonProperty("neighborhood")
+        private String neighborhood;
+        @JsonProperty("city")
+        private String city;
+    }
+
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public static class AdditionalInfo {
+        private AdditionalPayer payer;
+        private List<Item> items;
+        @JsonProperty("ip_address")
+        private String ipAddress;
+    }
+
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public static class AdditionalPayer {
+        @JsonProperty("first_name")
+        private String firstName;
+        @JsonProperty("last_name")
+        private String lastName;
+        private Phone phone;
+        private Address address;
+        @JsonProperty("registration_date")
+        private String registrationDate;
+        @JsonProperty("is_prime_user")
+        private Boolean isPrimeUser;
+        @JsonProperty("is_first_purchase_online")
+        private Boolean isFirstPurchaseOnline;
+        @JsonProperty("authentication_type")
+        private String authenticationType;
+        @JsonProperty("last_purchase")
+        private String lastPurchase;
     }
 
     @Data

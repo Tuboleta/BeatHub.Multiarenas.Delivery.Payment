@@ -31,6 +31,7 @@ public class MercadoPagoController {
     ) {
         String arenaId = resolveArenaId(httpRequest);
         Long usuarioId = resolveUsuarioId(httpRequest);
+        populateClientIp(request, httpRequest);
 
         PaymentInitResponse response = mercadoPagoService.initiateOrder(request, arenaId, usuarioId);
         return ResponseEntity.ok(ApiResponse.ok(response, "Orden de Mercado Pago generada exitosamente"));
@@ -166,6 +167,34 @@ public class MercadoPagoController {
         if (attr instanceof Long id) return id;
         if (attr instanceof Number num) return num.longValue();
         return SecurityUtils.getCurrentUsuarioId().orElse(1L);
+    }
+
+    private void populateClientIp(InitPaymentRequest request, HttpServletRequest httpRequest) {
+        if (request == null || httpRequest == null) return;
+        String clientIp = httpRequest.getHeader("X-Forwarded-For");
+        if (clientIp == null || clientIp.isBlank() || "unknown".equalsIgnoreCase(clientIp)) {
+            clientIp = httpRequest.getHeader("X-Real-IP");
+        }
+        if (clientIp == null || clientIp.isBlank() || "unknown".equalsIgnoreCase(clientIp)) {
+            clientIp = httpRequest.getRemoteAddr();
+        }
+        if (clientIp != null && clientIp.contains(",")) {
+            clientIp = clientIp.split(",")[0].trim();
+        }
+        if (clientIp != null && clientIp.startsWith("::ffff:")) {
+            clientIp = clientIp.substring(7).trim();
+        }
+        if ("::1".equals(clientIp) || "localhost".equalsIgnoreCase(clientIp)) {
+            clientIp = "127.0.0.1";
+        }
+        if (clientIp != null && !clientIp.isBlank()) {
+            if (request.getExtraParams() == null) {
+                request.setExtraParams(new java.util.HashMap<>());
+            }
+            if (!request.getExtraParams().containsKey("ip_address")) {
+                request.getExtraParams().put("ip_address", clientIp);
+            }
+        }
     }
 }
 

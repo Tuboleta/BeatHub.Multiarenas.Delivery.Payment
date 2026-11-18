@@ -243,4 +243,44 @@ class MercadoPagoServiceImplTest {
                 assertNotNull(sentReq.getConfig());
                 assertEquals("BiteUp DAVIarena", sentReq.getConfig().getStatementDescriptor());
         }
+
+        @Test
+        @DisplayName("initiateOrder recorta y sanitiza street_number cuando supera los 10 caracteres")
+        void initiateOrder_SanitizaStreetNumber_CuandoSupera10Caracteres() {
+                InitPaymentRequest request = new InitPaymentRequest();
+                request.setPedidoId(104L);
+                request.setMonto(new BigDecimal("15000.00"));
+                request.setTipoPagoId(1);
+
+                InitPaymentRequest.PayerDto payer = new InitPaymentRequest.PayerDto();
+                payer.setEmail("ana@example.com");
+                payer.setFirstName("Ana");
+                InitPaymentRequest.AddressDto addr = new InitPaymentRequest.AddressDto();
+                addr.setStreetName("Carrera 15 # 93-60 Torre B Apartamento 402");
+                addr.setStreetNumber("Carrera 15 # 93-60 Torre B Apartamento 402");
+                addr.setZipCode("110111");
+                addr.setCityName("Bogota");
+                payer.setAddress(addr);
+                request.setPayer(payer);
+
+                when(pedidoPagoRepository.save(any(PedidoPago.class)))
+                                .thenAnswer(invocation -> invocation.getArgument(0));
+                when(pedidoPagoRepository.findByUsuarioId(anyLong())).thenReturn(Collections.emptyList());
+
+                MpOrderResponse mockResp = new MpOrderResponse();
+                mockResp.setId("MP-ORD-TEST-999");
+                when(mercadoPagoClient.createOrder(any(MpOrderRequest.class), any(), any(), any()))
+                                .thenReturn(mockResp);
+
+                mercadoPagoService.initiateOrder(request, "1", 20L);
+
+                ArgumentCaptor<MpOrderRequest> captor = ArgumentCaptor.forClass(MpOrderRequest.class);
+                verify(mercadoPagoClient, atLeastOnce()).createOrder(captor.capture(), eq("1"), eq(20L), any());
+                MpOrderRequest sentReq = captor.getValue();
+
+                assertNotNull(sentReq.getPayer().getAddress());
+                assertNotNull(sentReq.getPayer().getAddress().getStreetNumber());
+                assertTrue(sentReq.getPayer().getAddress().getStreetNumber().length() <= 10);
+                assertEquals("93-60", sentReq.getPayer().getAddress().getStreetNumber());
+        }
 }

@@ -196,16 +196,15 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
                 payerDocNumber = p.getIdentificationNumber().trim();
             if (p.getAddress() != null) {
                 String stName = p.getAddress().getStreetName();
-                String stNum = (p.getAddress().getStreetNumber() != null && !p.getAddress().getStreetNumber().isBlank())
-                        ? p.getAddress().getStreetNumber().trim()
-                        : stName;
+                String zip = p.getAddress().getZipCode();
+                String stNum = sanitizeStreetNumber(p.getAddress().getStreetNumber(), stName, zip);
                 String cityName = p.getAddress().getCityName();
                 String neigh = (p.getAddress().getNeighborhood() != null && !p.getAddress().getNeighborhood().isBlank())
                         ? p.getAddress().getNeighborhood().trim()
                         : cityName;
 
                 payerAddress = MpOrderRequest.Address.builder()
-                        .zipCode(p.getAddress().getZipCode())
+                        .zipCode(zip)
                         .streetName(stName)
                         .streetNumber(stNum)
                         .neighborhood(neigh)
@@ -285,6 +284,9 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
                     }
                     if (payerAddress == null && userInfo.getDireccion() != null && !userInfo.getDireccion().isBlank()) {
                         String dir = userInfo.getDireccion().trim();
+                        String zip = userInfo.getCodigoPostal() != null && !userInfo.getCodigoPostal().isBlank()
+                                ? userInfo.getCodigoPostal().trim()
+                                : "110111";
                         String stName = dir;
                         String stNum = null;
                         java.util.regex.Matcher m = java.util.regex.Pattern
@@ -298,9 +300,7 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
                             if (!p2.isEmpty())
                                 stNum = p2;
                         }
-                        if (stNum == null || stNum.isBlank()) {
-                            stNum = stName;
-                        }
+                        stNum = sanitizeStreetNumber(stNum, stName, zip);
                         String city = userInfo.getCiudad() != null && !userInfo.getCiudad().isBlank()
                                 ? userInfo.getCiudad().trim()
                                 : "Bogota";
@@ -309,7 +309,7 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
                                 .streetName(stName)
                                 .streetNumber(stNum)
                                 .neighborhood(neighborhood)
-                                .zipCode(userInfo.getCodigoPostal() != null ? userInfo.getCodigoPostal() : "110111")
+                                .zipCode(zip)
                                 .city(city)
                                 .build();
                     }
@@ -324,10 +324,8 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
             var ap = request.getAdditionalInfo().getPayer();
             if (ap.getAddress() != null && payerAddress == null) {
                 String stName = ap.getAddress().getStreetName();
-                String stNum = (ap.getAddress().getStreetNumber() != null
-                        && !ap.getAddress().getStreetNumber().isBlank())
-                                ? ap.getAddress().getStreetNumber().trim()
-                                : stName;
+                String zip = ap.getAddress().getZipCode();
+                String stNum = sanitizeStreetNumber(ap.getAddress().getStreetNumber(), stName, zip);
                 String city = ap.getAddress().getCityName();
                 String neigh = (ap.getAddress().getNeighborhood() != null
                         && !ap.getAddress().getNeighborhood().isBlank())
@@ -335,7 +333,7 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
                                 : city;
 
                 payerAddress = MpOrderRequest.Address.builder()
-                        .zipCode(ap.getAddress().getZipCode())
+                        .zipCode(zip)
                         .streetName(stName)
                         .streetNumber(stNum)
                         .neighborhood(neigh)
@@ -398,10 +396,12 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
         }
 
         if (payerAddress != null) {
-            if ((payerAddress.getStreetNumber() == null || payerAddress.getStreetNumber().isBlank())
-                    && payerAddress.getStreetName() != null && !payerAddress.getStreetName().isBlank()) {
-                payerAddress.setStreetNumber(payerAddress.getStreetName().trim());
-            }
+            String sanitizedNum = sanitizeStreetNumber(
+                    payerAddress.getStreetNumber(),
+                    payerAddress.getStreetName(),
+                    payerAddress.getZipCode());
+            payerAddress.setStreetNumber(sanitizedNum);
+
             if ((payerAddress.getNeighborhood() == null || payerAddress.getNeighborhood().isBlank())
                     && payerAddress.getCity() != null && !payerAddress.getCity().isBlank()) {
                 payerAddress.setNeighborhood(payerAddress.getCity().trim());
@@ -1822,6 +1822,60 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
         return null;
     }
 
+    private String sanitizeStreetNumber(String streetNumber, String streetName, String zipCode) {
+        if (streetNumber != null && !streetNumber.isBlank()) {
+            String trimmed = streetNumber.trim();
+            if (trimmed.length() <= 10) {
+                return trimmed;
+            }
+        }
+
+        String source = (streetNumber != null && !streetNumber.isBlank()) ? streetNumber.trim()
+                : (streetName != null && !streetName.isBlank() ? streetName.trim() : null);
+
+        if (source != null && source.length() <= 10) {
+            return source;
+        }
+
+        if (source != null) {
+            java.util.regex.Matcher m = java.util.regex.Pattern
+                    .compile("(?:#|No\\.?|N°)\\s*([A-Za-z0-9\\-]+)", java.util.regex.Pattern.CASE_INSENSITIVE)
+                    .matcher(source);
+            if (m.find()) {
+                String extracted = m.group(1).trim();
+                if (!extracted.isEmpty() && extracted.length() <= 10) {
+                    return extracted;
+                }
+            }
+
+            java.util.regex.Matcher mNum = java.util.regex.Pattern
+                    .compile("\\b\\d+[A-Za-z0-9\\-]*\\b")
+                    .matcher(source);
+            if (mNum.find()) {
+                String num = mNum.group().trim();
+                if (!num.isEmpty() && num.length() <= 10) {
+                    return num;
+                }
+            }
+        }
+
+        if (zipCode != null && !zipCode.isBlank()) {
+            String cleanZip = zipCode.trim();
+            if (cleanZip.length() <= 10) {
+                return cleanZip;
+            }
+        }
+
+        if (source != null) {
+            String trimmed = source.substring(0, Math.min(source.length(), 10)).trim();
+            if (!trimmed.isEmpty()) {
+                return trimmed;
+            }
+        }
+
+        return "110111";
+    }
+
     private String[] sanitizePhone(String phone, String areaCode) {
         String cleanArea = (areaCode != null && !areaCode.isBlank()) ? areaCode.replaceAll("\\D", "") : "57";
         if (cleanArea.isBlank()) {
@@ -1916,7 +1970,7 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
         if (arenaId != null && !arenaId.isBlank()) {
             if ("2".equals(arenaId.trim()) || "movistar".equalsIgnoreCase(arenaId.trim())) {
                 arenaName = "MovistarArena";
-            } else if ("1".equals(arenaId.trim()) || "davi".equalsIgnoreCase(arenaId.trim())) {
+            } else if ("1".equals(arenaId.trim()) || arenaId.trim().toLowerCase().startsWith("davi")) {
                 arenaName = "DAVIarena";
             } else if (!arenaId.trim().matches("\\d+")) {
                 arenaName = arenaId.trim();

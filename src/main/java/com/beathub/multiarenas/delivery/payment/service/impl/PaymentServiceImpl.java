@@ -26,6 +26,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -218,6 +219,7 @@ public class PaymentServiceImpl implements PaymentService {
             pedidoPago.setErrorCode(credibancoResp.getErrorCode());
             pedidoPago.setErrorMessage(credibancoResp.getErrorMessage());
             pedidoPagoRepository.save(pedidoPago);
+            notificarEstadoPagoRechazado(pedidoPago, credibancoResp.getErrorMessage());
 
             throw new CredibancoApiException(credibancoResp.getErrorCode(),
                     "Error registrando orden en Credibanco: " + credibancoResp.getErrorMessage());
@@ -280,6 +282,22 @@ public class PaymentServiceImpl implements PaymentService {
         if (pagos.isEmpty()) {
             throw new ResourceNotFoundException("No se encontró registro de pago para el pedido " + pedidoId);
         }
+
+        PaymentStatusResponse lastSyncedResp = null;
+        for (PedidoPago p : pagos) {
+            if (p.getEstadoId() != null && (p.getEstadoId() == PedidoPago.ESTADO_INICIADO || p.getEstadoId() == 1)) {
+                if (Integer.valueOf(IntegrationAuditService.SERVICIO_MERCADOPAGO).equals(p.getPasarelaId())
+                        || (p.getMpOrderId() != null && !Integer.valueOf(IntegrationAuditService.SERVICIO_CREDIBANCO).equals(p.getPasarelaId()))) {
+                    lastSyncedResp = mercadoPagoService.queryOrderStatus(p.getId(), arenaId, usuarioId);
+                } else {
+                    lastSyncedResp = syncAndMapPaymentStatus(p, arenaId, usuarioId);
+                }
+            }
+        }
+        if (lastSyncedResp != null) {
+            return lastSyncedResp;
+        }
+
         PedidoPago masReciente = pagos.get(pagos.size() - 1);
         if (Integer.valueOf(IntegrationAuditService.SERVICIO_MERCADOPAGO).equals(masReciente.getPasarelaId())
                 || (masReciente.getMpOrderId() != null && !Integer.valueOf(IntegrationAuditService.SERVICIO_CREDIBANCO)
@@ -316,8 +334,12 @@ public class PaymentServiceImpl implements PaymentService {
     }
 
     private PaymentStatusResponse syncAndMapPaymentStatus(PedidoPago pedidoPago, String arenaId, Long usuarioId) {
-        // Consultar estado en tiempo real en Credibanco
-        if (pedidoPago.getCredibancoOrderId() != null) {
+        // Cortocircuito defensivo: si el pago ya está aprobado en base de datos, evitar llamadas síncronas a Credibanco
+        boolean yaAprobado = Integer.valueOf(2).equals(pedidoPago.getEstadoId())
+                || Integer.valueOf(PedidoPago.ESTADO_APROBADO).equals(pedidoPago.getEstadoId());
+
+        // Consultar estado en tiempo real en Credibanco únicamente si el pago aún no está aprobado
+        if (!yaAprobado && pedidoPago.getCredibancoOrderId() != null) {
             try {
                 CredibancoStatusResponse statusResp = credibancoClient.getOrderStatusExtended(
                         pedidoPago.getCredibancoOrderId(),
@@ -392,6 +414,7 @@ public class PaymentServiceImpl implements PaymentService {
                     } else if (statusResp.getOrderStatus() != null && statusResp.getOrderStatus() == 6) {
                         pedidoPago.setEstadoId(PedidoPago.ESTADO_RECHAZADO); // 24: Rechazado (Flujo 5)
                         pedidoPagoRepository.save(pedidoPago);
+                        notificarEstadoPagoRechazado(pedidoPago, statusResp.getErrorMessage());
                     } else {
                         pedidoPagoRepository.save(pedidoPago);
                     }
@@ -568,6 +591,25 @@ public class PaymentServiceImpl implements PaymentService {
                             pedidoPago.getPedidoId(), nuevoTotalPagado, nuevoSaldo);
                 }
                 grupoPagoRepository.save(gp);
+
+                // Notificar en tiempo real por WebSocket/Redis a los participantes involucrados
+                if (notificationServiceClient != null) {
+                    try {
+                        Long arenaIdLong = parseArenaId(gp.getArenaId());
+                        List<Long> usuarios = new ArrayList<>();
+                        if (pedidoPago.getUsuarioId() != null && pedidoPago.getUsuarioId() > 0) usuarios.add(pedidoPago.getUsuarioId());
+                        if (gpu.getUsuarioId() != null && !usuarios.contains(gpu.getUsuarioId())) usuarios.add(gpu.getUsuarioId());
+                        if (gp.getCreacionUsuario() != null && !usuarios.contains(gp.getCreacionUsuario())) {
+                            usuarios.add(gp.getCreacionUsuario());
+                        }
+                        notificationServiceClient.notificarCambioEstadoPagoMultiple(
+                                arenaIdLong, usuarios, pedidoPago.getPedidoId(), gp.getId(), gp.getCodigoUnico(),
+                                23, "Pago Aprobado", pedidoPago.getMonto(), detailMessage
+                        );
+                    } catch (Exception ex) {
+                        log.warn("Error enviando notificación de aporte aprobado: {}", ex.getMessage());
+                    }
+                }
             }
         } else {
             // Notificar a Ordering (estado 2: Pagado / En preparación)
@@ -577,6 +619,40 @@ public class PaymentServiceImpl implements PaymentService {
             } else {
                 orderingClient.updateOrderStatus(pedidoPago.getPedidoId(), 2, detailMessage, null);
             }
+
+            // Notificar en tiempo real por WebSocket/Redis al usuario titular
+            if (notificationServiceClient != null && pedidoPago.getUsuarioId() != null && pedidoPago.getUsuarioId() > 0) {
+                try {
+                    Long arenaIdLong = parseArenaId(pedidoPago.getArenaId());
+                    notificationServiceClient.notificarCambioEstadoPago(
+                            arenaIdLong, pedidoPago.getUsuarioId(), pedidoPago.getPedidoId(), null, null,
+                            23, "Pago Aprobado", pedidoPago.getMonto(), detailMessage
+                    );
+                } catch (Exception ex) {
+                    log.warn("Error enviando notificación de pago individual aprobado: {}", ex.getMessage());
+                }
+            }
+        }
+    }
+
+    private void notificarEstadoPagoRechazado(PedidoPago pedidoPago, String motivo) {
+        if (notificationServiceClient == null || pedidoPago == null) return;
+        try {
+            Long arenaIdLong = parseArenaId(pedidoPago.getArenaId());
+            GrupoPago gp = pedidoPago.getGrupoPagoUsuario() != null ? pedidoPago.getGrupoPagoUsuario().getGrupoPago() : null;
+            Long grupoId = gp != null ? gp.getId() : null;
+            String codigoUnico = gp != null ? gp.getCodigoUnico() : null;
+            List<Long> usuarios = new ArrayList<>();
+            if (pedidoPago.getUsuarioId() != null && pedidoPago.getUsuarioId() > 0) usuarios.add(pedidoPago.getUsuarioId());
+            if (gp != null && gp.getCreacionUsuario() != null && !usuarios.contains(gp.getCreacionUsuario())) {
+                usuarios.add(gp.getCreacionUsuario());
+            }
+            notificationServiceClient.notificarCambioEstadoPagoMultiple(
+                    arenaIdLong, usuarios, pedidoPago.getPedidoId(), grupoId, codigoUnico,
+                    24, "Pago Rechazado", pedidoPago.getMonto(), motivo != null ? motivo : "Transacción rechazada"
+            );
+        } catch (Exception ex) {
+            log.warn("Error enviando notificación de pago rechazado: {}", ex.getMessage());
         }
     }
 

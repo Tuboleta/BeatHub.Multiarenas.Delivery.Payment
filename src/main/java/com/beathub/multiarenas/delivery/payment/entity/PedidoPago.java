@@ -75,16 +75,16 @@ public class PedidoPago {
     @Column(name = "fecha_pago")
     private LocalDateTime fechaPago;
 
-    @Column(name = "action_code", length = 20)
+    @Column(name = "action_code", length = 50)
     private String actionCode;
 
     @Column(name = "action_code_description", columnDefinition = "TEXT")
     private String actionCodeDescription;
 
-    @Column(name = "auth_code", length = 20)
+    @Column(name = "auth_code", length = 100)
     private String authCode;
 
-    @Column(name = "error_code", length = 20)
+    @Column(name = "error_code", length = 50)
     private String errorCode;
 
     @Column(name = "error_message", columnDefinition = "TEXT")

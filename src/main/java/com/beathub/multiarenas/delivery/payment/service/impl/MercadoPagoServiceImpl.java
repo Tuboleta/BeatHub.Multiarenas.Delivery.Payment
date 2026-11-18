@@ -754,25 +754,6 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
             additionalInfo.put("payer.ip_address", sanitizedIp);
         }
 
-        // Homologación Mercado Pago: duplicar street_name como street_number y city
-        // como neighborhood
-        String streetNum = null;
-        String neighborhoodVal = null;
-        if (payerAddress != null) {
-            streetNum = (payerAddress.getStreetNumber() != null && !payerAddress.getStreetNumber().isBlank())
-                    ? payerAddress.getStreetNumber().trim()
-                    : payerAddress.getStreetName();
-            neighborhoodVal = (payerAddress.getNeighborhood() != null && !payerAddress.getNeighborhood().isBlank())
-                    ? payerAddress.getNeighborhood().trim()
-                    : payerAddress.getCity();
-        }
-        if (streetNum != null && !streetNum.isBlank()) {
-            additionalInfo.put("payer.address.street_number", streetNum);
-        }
-        if (neighborhoodVal != null && !neighborhoodVal.isBlank()) {
-            additionalInfo.put("payer.address.neighborhood", neighborhoodVal);
-        }
-
         MpOrderRequest orderReq = MpOrderRequest.builder()
                 .type("online")
                 .processingMode("manual")

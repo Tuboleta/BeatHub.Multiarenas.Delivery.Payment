@@ -279,27 +279,66 @@ public class GrupoPagoServiceImpl implements GrupoPagoService {
     }
 
     @Override
-    @Transactional(readOnly = true)
+    @Transactional
     public GrupoPagoResponse obtenerPorId(Long id, Long currentUsuarioId) {
         GrupoPago grupoPago = grupoPagoRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Grupo de pago no encontrado con ID: " + id));
+        sincronizarPagosPendientesGrupo(grupoPago);
+        grupoPago = grupoPagoRepository.findById(id).orElse(grupoPago);
         return mapearAGrupoPagoResponse(grupoPago, currentUsuarioId);
     }
 
     @Override
-    @Transactional(readOnly = true)
+    @Transactional
     public GrupoPagoResponse obtenerPorCodigo(String codigoUnico, Long currentUsuarioId) {
         GrupoPago grupoPago = grupoPagoRepository.findByCodigoUnico(codigoUnico.trim().toUpperCase())
                 .orElseThrow(() -> new ResourceNotFoundException("Grupo de pago no encontrado con código: " + codigoUnico));
+        sincronizarPagosPendientesGrupo(grupoPago);
+        grupoPago = grupoPagoRepository.findById(grupoPago.getId()).orElse(grupoPago);
         return mapearAGrupoPagoResponse(grupoPago, currentUsuarioId);
     }
 
     @Override
-    @Transactional(readOnly = true)
+    @Transactional
     public GrupoPagoResponse obtenerPorPedidoId(Long pedidoId, Long currentUsuarioId) {
         GrupoPago grupoPago = grupoPagoRepository.findByPedidoId(pedidoId)
                 .orElseThrow(() -> new ResourceNotFoundException("No existe un grupo de pago para el pedido: " + pedidoId));
+        sincronizarPagosPendientesGrupo(grupoPago);
+        grupoPago = grupoPagoRepository.findById(grupoPago.getId()).orElse(grupoPago);
         return mapearAGrupoPagoResponse(grupoPago, currentUsuarioId);
+    }
+
+    private void sincronizarPagosPendientesGrupo(GrupoPago grupoPago) {
+        if (grupoPago == null || Integer.valueOf(2).equals(grupoPago.getEstadoId()) || Integer.valueOf(4).equals(grupoPago.getEstadoId())) {
+            return;
+        }
+
+        try {
+            List<PedidoPago> pagos = new ArrayList<>(pedidoPagoRepository.findByGrupoPagoUsuario_GrupoPago_Id(grupoPago.getId()));
+            if (grupoPago.getPedidoId() != null) {
+                List<PedidoPago> pagosPedido = pedidoPagoRepository.findByPedidoId(grupoPago.getPedidoId());
+                for (PedidoPago pp : pagosPedido) {
+                    if (pagos.stream().noneMatch(p -> p.getId().equals(pp.getId()))) {
+                        pagos.add(pp);
+                    }
+                }
+            }
+
+            for (PedidoPago p : pagos) {
+                if (p.getEstadoId() != null && (p.getEstadoId() == PedidoPago.ESTADO_INICIADO || p.getEstadoId() == 1)) {
+                    log.info("[GrupoPago] Sincronizando transacción pendiente #{} para grupo {} (pedido #{})",
+                            p.getId(), grupoPago.getCodigoUnico(), grupoPago.getPedidoId());
+                    try {
+                        paymentService.queryPaymentStatus(p.getId(), p.getArenaId(), p.getUsuarioId());
+                    } catch (Exception ex) {
+                        log.warn("[GrupoPago] Error al sincronizar pago #{}: {}", p.getId(), ex.getMessage());
+                    }
+                }
+            }
+        } catch (Exception ex) {
+            log.warn("[GrupoPago] Error al intentar sincronizar pagos pendientes del grupo {}: {}",
+                    grupoPago.getId(), ex.getMessage());
+        }
     }
 
     @Override

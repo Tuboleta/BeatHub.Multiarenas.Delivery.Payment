@@ -23,7 +23,7 @@ public class MpOrderRequest {
 
     @Builder.Default
     @JsonProperty("capture_mode")
-    private String captureMode = "automatic_async";
+    private String captureMode = "automatic";
 
     @JsonProperty("external_reference")
     private String externalReference;

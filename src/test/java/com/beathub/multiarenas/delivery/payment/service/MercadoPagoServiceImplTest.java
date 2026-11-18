@@ -84,8 +84,10 @@ class MercadoPagoServiceImplTest {
         org.springframework.test.util.ReflectionTestUtils.setField(mercadoPagoService, "objectMapper", objectMapper);
         when(mercadoPagoProperties.getCurrency()).thenReturn("COP");
         when(mercadoPagoProperties.getDefaultReturnUrl()).thenReturn("http://localhost:3000/checkout/payment-return");
-        when(mercadoPagoProperties.getDefaultFailUrl()).thenReturn("http://localhost:3000/checkout/payment-return?error=1");
-        when(tipoPagoRepository.findById(1)).thenReturn(Optional.of(TipoPago.builder().id(1).nombre("PAGO_UNICO").build()));
+        when(mercadoPagoProperties.getDefaultFailUrl())
+                .thenReturn("http://localhost:3000/checkout/payment-return?error=1");
+        when(tipoPagoRepository.findById(1))
+                .thenReturn(Optional.of(TipoPago.builder().id(1).nombre("PAGO_UNICO").build()));
     }
 
     @Test
@@ -148,15 +150,99 @@ class MercadoPagoServiceImplTest {
         assertEquals("93-60", sentReq.getPayer().getAddress().getStreetNumber());
         assertEquals("110111", sentReq.getPayer().getAddress().getZipCode());
         assertEquals("Bogotá", sentReq.getPayer().getAddress().getCity());
+        assertEquals("Bogotá", sentReq.getPayer().getAddress().getNeighborhood());
 
-        // 2. Verificación Datos de Industria sugeridos (additional_info) para Checkout Pro Orders API
+        // 2. Verificación Datos de Industria sugeridos (additional_info) para Checkout
+        // Pro Orders API
         assertNotNull(sentReq.getAdditionalInfo(), "additional_info no debe ser nulo");
         var addInfo = sentReq.getAdditionalInfo();
-        assertNotNull(addInfo.get("payer.registration_date"), "additional_info['payer.registration_date'] debe provenir de Auth / SSO");
+        assertNotNull(addInfo.get("payer.registration_date"),
+                "additional_info['payer.registration_date'] debe provenir de Auth / SSO");
         assertTrue(addInfo.get("payer.registration_date").toString().contains("2023-06-15"));
-        assertEquals(Boolean.TRUE, addInfo.get("payer.is_prime_user"), "additional_info['payer.is_prime_user'] debe ser true al estar registrado en la plataforma");
-        assertEquals(Boolean.TRUE, addInfo.get("payer.is_first_purchase_online"), "additional_info['payer.is_first_purchase_online'] debe ser true al no tener compras previas");
-        assertEquals("WEB", addInfo.get("payer.authentication_type"), "additional_info['payer.authentication_type'] normalizado a enum soportado por Mercado Pago (WEB o MOBILE)");
+        assertEquals(Boolean.TRUE, addInfo.get("payer.is_prime_user"),
+                "additional_info['payer.is_prime_user'] debe ser true al estar registrado en la plataforma");
+        assertEquals(Boolean.TRUE, addInfo.get("payer.is_first_purchase_online"),
+                "additional_info['payer.is_first_purchase_online'] debe ser true al no tener compras previas");
+        assertEquals("WEB", addInfo.get("payer.authentication_type"),
+                "additional_info['payer.authentication_type'] normalizado a enum soportado por Mercado Pago (WEB o MOBILE)");
+        assertEquals("93-60", addInfo.get("payer.address.street_number"));
+        assertEquals("Bogotá", addInfo.get("payer.address.neighborhood"));
+
+        // 3. Verificación de capture_mode sólo con automatic
+        assertEquals("automatic", sentReq.getCaptureMode());
+
+        // 4. Verificación de statement_descriptor
+        assertNotNull(sentReq.getConfig(), "Config no debe ser nulo");
+        assertEquals("BiteUp DAVIarena", sentReq.getConfig().getStatementDescriptor());
+    }
+
+    @Test
+    @DisplayName("initiateOrder duplica street_name a street_number y city a neighborhood si faltan, y fija capture_mode en automatic")
+    void initiateOrder_DuplicaStreetNumberYNeighborhood() {
+        InitPaymentRequest request = new InitPaymentRequest();
+        request.setPedidoId(103L);
+        request.setMonto(new BigDecimal("15000.00"));
+        request.setTipoPagoId(1);
+
+        InitPaymentRequest.PayerDto payer = new InitPaymentRequest.PayerDto();
+        payer.setEmail("ana@example.com");
+        payer.setFirstName("Ana");
+        InitPaymentRequest.AddressDto addr = new InitPaymentRequest.AddressDto();
+        addr.setStreetName("Calle 100");
+        addr.setCityName("Medellin");
+        payer.setAddress(addr);
+        request.setPayer(payer);
+
+        when(pedidoPagoRepository.save(any(PedidoPago.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        when(pedidoPagoRepository.findByUsuarioId(anyLong())).thenReturn(Collections.emptyList());
+
+        MpOrderResponse mockResp = new MpOrderResponse();
+        mockResp.setId("MP-ORD-TEST-789");
+        when(mercadoPagoClient.createOrder(any(MpOrderRequest.class), any(), any(), any())).thenReturn(mockResp);
+
+        mercadoPagoService.initiateOrder(request, "1", 20L);
+
+        ArgumentCaptor<MpOrderRequest> captor = ArgumentCaptor.forClass(MpOrderRequest.class);
+        verify(mercadoPagoClient, atLeastOnce()).createOrder(captor.capture(), eq("1"), eq(20L), any());
+        MpOrderRequest sentReq = captor.getValue();
+
+        assertEquals("automatic", sentReq.getCaptureMode());
+        assertNotNull(sentReq.getPayer().getAddress());
+        assertEquals("Calle 100", sentReq.getPayer().getAddress().getStreetName());
+        assertEquals("Calle 100", sentReq.getPayer().getAddress().getStreetNumber());
+        assertEquals("Medellin", sentReq.getPayer().getAddress().getCity());
+        assertEquals("Medellin", sentReq.getPayer().getAddress().getNeighborhood());
+
+        var addInfo = sentReq.getAdditionalInfo();
+        assertNotNull(addInfo);
+        assertEquals("Calle 100", addInfo.get("payer.address.street_number"));
+        assertEquals("Medellin", addInfo.get("payer.address.neighborhood"));
+    }
+
+    }
+
+    @Test
+    @DisplayName("initiateOrder envía statement_descriptor concatenando BiteUp DAVIarena aun con arenaId numérico 1")
+    void initiateOrder_StatementDescriptor_FallbackArenaNumerica() {
+        InitPaymentRequest request = new InitPaymentRequest();
+        request.setPedidoId(102L);
+        request.setMonto(new BigDecimal("25000.00"));
+        request.setTipoPagoId(1);
+
+        when(pedidoPagoRepository.save(any(PedidoPago.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        when(pedidoPagoRepository.findByUsuarioId(anyLong())).thenReturn(Collections.emptyList());
+
+        MpOrderResponse mockResp = new MpOrderResponse();
+        mockResp.setId("MP-ORD-TEST-456");
+        when(mercadoPagoClient.createOrder(any(MpOrderRequest.class), any(), any(), any())).thenReturn(mockResp);
+
+        mercadoPagoService.initiateOrder(request, "1", 10L);
+
+        ArgumentCaptor<MpOrderRequest> captor = ArgumentCaptor.forClass(MpOrderRequest.class);
+        verify(mercadoPagoClient, atLeastOnce()).createOrder(captor.capture(), eq("1"), eq(10L), any());
+        MpOrderRequest sentReq = captor.getValue();
+
+        assertNotNull(sentReq.getConfig());
+        assertEquals("BiteUp DAVIarena", sentReq.getConfig().getStatementDescriptor());
     }
 }
-

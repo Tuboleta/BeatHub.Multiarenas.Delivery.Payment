@@ -29,6 +29,9 @@ public class PagarCuotaGrupoRequest {
 
     private String description;
 
+    @com.fasterxml.jackson.annotation.JsonAlias({"statement_descriptor", "statementDescriptor"})
+    private String statementDescriptor;
+
     private String nombre;
 
     private String email;

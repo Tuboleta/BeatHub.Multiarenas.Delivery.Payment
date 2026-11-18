@@ -195,12 +195,21 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
             if (p.getIdentificationNumber() != null && !p.getIdentificationNumber().isBlank())
                 payerDocNumber = p.getIdentificationNumber().trim();
             if (p.getAddress() != null) {
+                String stName = p.getAddress().getStreetName();
+                String stNum = (p.getAddress().getStreetNumber() != null && !p.getAddress().getStreetNumber().isBlank())
+                        ? p.getAddress().getStreetNumber().trim()
+                        : stName;
+                String cityName = p.getAddress().getCityName();
+                String neigh = (p.getAddress().getNeighborhood() != null && !p.getAddress().getNeighborhood().isBlank())
+                        ? p.getAddress().getNeighborhood().trim()
+                        : cityName;
+
                 payerAddress = MpOrderRequest.Address.builder()
                         .zipCode(p.getAddress().getZipCode())
-                        .streetName(p.getAddress().getStreetName())
-                        .streetNumber(p.getAddress().getStreetNumber())
-                        .neighborhood(p.getAddress().getNeighborhood())
-                        .city(p.getAddress().getCityName())
+                        .streetName(stName)
+                        .streetNumber(stNum)
+                        .neighborhood(neigh)
+                        .city(cityName)
                         .build();
             }
         }
@@ -289,11 +298,19 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
                             if (!p2.isEmpty())
                                 stNum = p2;
                         }
+                        if (stNum == null || stNum.isBlank()) {
+                            stNum = stName;
+                        }
+                        String city = userInfo.getCiudad() != null && !userInfo.getCiudad().isBlank()
+                                ? userInfo.getCiudad().trim()
+                                : "Bogota";
+                        String neighborhood = city;
                         payerAddress = MpOrderRequest.Address.builder()
                                 .streetName(stName)
                                 .streetNumber(stNum)
-                                .zipCode(userInfo.getCodigoPostal())
-                                .city(userInfo.getCiudad())
+                                .neighborhood(neighborhood)
+                                .zipCode(userInfo.getCodigoPostal() != null ? userInfo.getCodigoPostal() : "110111")
+                                .city(city)
                                 .build();
                     }
                 }
@@ -306,12 +323,23 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
         if (request.getAdditionalInfo() != null && request.getAdditionalInfo().getPayer() != null) {
             var ap = request.getAdditionalInfo().getPayer();
             if (ap.getAddress() != null && payerAddress == null) {
+                String stName = ap.getAddress().getStreetName();
+                String stNum = (ap.getAddress().getStreetNumber() != null
+                        && !ap.getAddress().getStreetNumber().isBlank())
+                                ? ap.getAddress().getStreetNumber().trim()
+                                : stName;
+                String city = ap.getAddress().getCityName();
+                String neigh = (ap.getAddress().getNeighborhood() != null
+                        && !ap.getAddress().getNeighborhood().isBlank())
+                                ? ap.getAddress().getNeighborhood().trim()
+                                : city;
+
                 payerAddress = MpOrderRequest.Address.builder()
                         .zipCode(ap.getAddress().getZipCode())
-                        .streetName(ap.getAddress().getStreetName())
-                        .streetNumber(ap.getAddress().getStreetNumber())
-                        .neighborhood(ap.getAddress().getNeighborhood())
-                        .city(ap.getAddress().getCityName())
+                        .streetName(stName)
+                        .streetNumber(stNum)
+                        .neighborhood(neigh)
+                        .city(city)
                         .build();
             }
             if (ap.getPhone() != null && !ap.getPhone().isBlank() && payerPhone == null) {
@@ -370,6 +398,14 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
         }
 
         if (payerAddress != null) {
+            if ((payerAddress.getStreetNumber() == null || payerAddress.getStreetNumber().isBlank())
+                    && payerAddress.getStreetName() != null && !payerAddress.getStreetName().isBlank()) {
+                payerAddress.setStreetNumber(payerAddress.getStreetName().trim());
+            }
+            if ((payerAddress.getNeighborhood() == null || payerAddress.getNeighborhood().isBlank())
+                    && payerAddress.getCity() != null && !payerAddress.getCity().isBlank()) {
+                payerAddress.setNeighborhood(payerAddress.getCity().trim());
+            }
             payerBuilder.address(payerAddress);
         }
 
@@ -532,8 +568,12 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
         }
 
         String statementDesc = (request.getStatementDescriptor() != null && !request.getStatementDescriptor().isBlank())
-                ? request.getStatementDescriptor()
-                : (arenaId != null ? arenaId.toUpperCase() : "DELIVERY");
+                ? request.getStatementDescriptor().trim()
+                : resolveDefaultStatementDescriptor(arenaId);
+
+        if (statementDesc.length() > 50) {
+            statementDesc = statementDesc.substring(0, 50).trim();
+        }
 
         MpOrderRequest.OnlineConfig onlineConfig = MpOrderRequest.OnlineConfig.builder()
                 .successUrl(returnUrl)
@@ -714,10 +754,29 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
             additionalInfo.put("payer.ip_address", sanitizedIp);
         }
 
+        // Homologación Mercado Pago: duplicar street_name como street_number y city
+        // como neighborhood
+        String streetNum = null;
+        String neighborhoodVal = null;
+        if (payerAddress != null) {
+            streetNum = (payerAddress.getStreetNumber() != null && !payerAddress.getStreetNumber().isBlank())
+                    ? payerAddress.getStreetNumber().trim()
+                    : payerAddress.getStreetName();
+            neighborhoodVal = (payerAddress.getNeighborhood() != null && !payerAddress.getNeighborhood().isBlank())
+                    ? payerAddress.getNeighborhood().trim()
+                    : payerAddress.getCity();
+        }
+        if (streetNum != null && !streetNum.isBlank()) {
+            additionalInfo.put("payer.address.street_number", streetNum);
+        }
+        if (neighborhoodVal != null && !neighborhoodVal.isBlank()) {
+            additionalInfo.put("payer.address.neighborhood", neighborhoodVal);
+        }
+
         MpOrderRequest orderReq = MpOrderRequest.builder()
                 .type("online")
                 .processingMode("manual")
-                .captureMode("automatic_async")
+                .captureMode("automatic")
                 .externalReference(referenciaPago)
                 .totalAmount(formattedTotalAmount)
                 .description(request.getDescription() != null ? request.getDescription()
@@ -1865,6 +1924,24 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
         }
 
         return "CC";
+    }
+
+    private String resolveDefaultStatementDescriptor(String arenaId) {
+        if (mercadoPagoProperties.getStatementDescriptor() != null
+                && !mercadoPagoProperties.getStatementDescriptor().isBlank()) {
+            return mercadoPagoProperties.getStatementDescriptor().trim();
+        }
+        String arenaName = "DAVIarena";
+        if (arenaId != null && !arenaId.isBlank()) {
+            if ("2".equals(arenaId.trim()) || "movistar".equalsIgnoreCase(arenaId.trim())) {
+                arenaName = "MovistarArena";
+            } else if ("1".equals(arenaId.trim()) || "davi".equalsIgnoreCase(arenaId.trim())) {
+                arenaName = "DAVIarena";
+            } else if (!arenaId.trim().matches("\\d+")) {
+                arenaName = arenaId.trim();
+            }
+        }
+        return "BiteUp " + arenaName;
     }
 
     private String obtenerFechaRegistroUsuarioAuth(Long usuarioId) {

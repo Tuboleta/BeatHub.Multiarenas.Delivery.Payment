@@ -634,6 +634,7 @@ public class GrupoPagoServiceImpl implements GrupoPagoService {
         initReq.setDescription(request != null && request.getDescription() != null && !request.getDescription().isBlank()
                 ? request.getDescription()
                 : "Aporte Vaca " + grupoPago.getNombre() + " (" + grupoPago.getCodigoUnico() + ")");
+        initReq.setStatementDescriptor(request != null ? request.getStatementDescriptor() : null);
         java.util.Map<String, Object> extraParams = (request != null && request.getExtraParams() != null)
                 ? new java.util.HashMap<>(request.getExtraParams()) : new java.util.HashMap<>();
         if (request != null) {

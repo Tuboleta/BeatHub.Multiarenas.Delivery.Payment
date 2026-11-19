@@ -172,9 +172,11 @@ class MercadoPagoServiceImplTest {
                 // 3. Verificación de capture_mode sólo con automatic
                 assertEquals("automatic", sentReq.getCaptureMode());
 
-                // 4. Verificación de statement_descriptor
+                // 4. Verificación de statement_descriptor (máx 13 caracteres para Checkout Pro Orders)
                 assertNotNull(sentReq.getConfig(), "Config no debe ser nulo");
-                assertEquals("BiteUp DAVIarena", sentReq.getConfig().getStatementDescriptor());
+                assertEquals("BiteUp DAVI", sentReq.getConfig().getStatementDescriptor());
+                assertTrue(sentReq.getConfig().getStatementDescriptor().length() <= 13,
+                                "statement_descriptor debe tener como máximo 13 caracteres");
         }
 
         @Test
@@ -218,7 +220,7 @@ class MercadoPagoServiceImplTest {
         }
 
         @Test
-        @DisplayName("initiateOrder envía statement_descriptor concatenando BiteUp DAVIarena aun con arenaId numérico 1")
+        @DisplayName("initiateOrder envía statement_descriptor con BiteUp DAVI (máximo 13 caracteres) aun con arenaId numérico 1")
         void initiateOrder_StatementDescriptor_FallbackArenaNumerica() {
                 InitPaymentRequest request = new InitPaymentRequest();
                 request.setPedidoId(102L);
@@ -241,7 +243,37 @@ class MercadoPagoServiceImplTest {
                 MpOrderRequest sentReq = captor.getValue();
 
                 assertNotNull(sentReq.getConfig());
-                assertEquals("BiteUp DAVIarena", sentReq.getConfig().getStatementDescriptor());
+                assertEquals("BiteUp DAVI", sentReq.getConfig().getStatementDescriptor());
+                assertTrue(sentReq.getConfig().getStatementDescriptor().length() <= 13);
+        }
+
+        @Test
+        @DisplayName("initiateOrder normaliza BiteUp DAVIarena y recorta statement_descriptor a 13 caracteres")
+        void initiateOrder_StatementDescriptor_RecortaA13Caracteres() {
+                InitPaymentRequest request = new InitPaymentRequest();
+                request.setPedidoId(105L);
+                request.setMonto(new BigDecimal("30000.00"));
+                request.setTipoPagoId(1);
+                request.setStatementDescriptor("BiteUp DAVIarena");
+
+                when(pedidoPagoRepository.save(any(PedidoPago.class)))
+                                .thenAnswer(invocation -> invocation.getArgument(0));
+                when(pedidoPagoRepository.findByUsuarioId(anyLong())).thenReturn(Collections.emptyList());
+
+                MpOrderResponse mockResp = new MpOrderResponse();
+                mockResp.setId("MP-ORD-TEST-999");
+                when(mercadoPagoClient.createOrder(any(MpOrderRequest.class), any(), any(), any()))
+                                .thenReturn(mockResp);
+
+                mercadoPagoService.initiateOrder(request, "1", 10L);
+
+                ArgumentCaptor<MpOrderRequest> captor = ArgumentCaptor.forClass(MpOrderRequest.class);
+                verify(mercadoPagoClient, atLeastOnce()).createOrder(captor.capture(), eq("1"), eq(10L), any());
+                MpOrderRequest sentReq = captor.getValue();
+
+                assertNotNull(sentReq.getConfig());
+                assertEquals("BiteUp DAVI", sentReq.getConfig().getStatementDescriptor());
+                assertTrue(sentReq.getConfig().getStatementDescriptor().length() <= 13);
         }
 
         @Test

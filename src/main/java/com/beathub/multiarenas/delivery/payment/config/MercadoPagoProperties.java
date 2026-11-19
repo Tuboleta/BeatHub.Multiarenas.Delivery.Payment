@@ -16,7 +16,7 @@ public class MercadoPagoProperties {
     private String defaultReturnUrl = "http://localhost:3000/checkout/payment-return";
     private String defaultFailUrl = "http://localhost:3000/checkout/payment-return?status=failed";
     private String publicWebhookUrl;
-    private String statementDescriptor = "BiteUp DAVIarena";
+    private String statementDescriptor = "BiteUp DAVI";
     private boolean sandbox = false;
 
     public boolean isSandbox() {

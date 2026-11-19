@@ -86,6 +86,8 @@ spec:
               value: "https://delivery-daviarena-stg.beat-hub.com/checkout/payment-return?status=failed"
             - name: MERCADOPAGO_PUBLIC_WEBHOOK_URL
               value: "https://delivery-api-stg.beat-hub.com/api/v1/payment/webhook/mercadopago"
+            - name: MERCADOPAGO_STATEMENT_DESCRIPTOR
+              value: "BiteUp DAVI"
             - name: PAYMENT_SONDA_ENABLED
               value: "false"
           resources:

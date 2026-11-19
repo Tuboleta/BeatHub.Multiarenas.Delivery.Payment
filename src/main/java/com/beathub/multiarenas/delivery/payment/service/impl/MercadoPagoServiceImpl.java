@@ -571,8 +571,13 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
                 ? request.getStatementDescriptor().trim()
                 : resolveDefaultStatementDescriptor(arenaId);
 
-        if (statementDesc.length() > 50) {
-            statementDesc = statementDesc.substring(0, 50).trim();
+        if (statementDesc != null) {
+            String lower = statementDesc.toLowerCase();
+            if (lower.contains("daviarena") || lower.contains("daviar")) {
+                statementDesc = "BiteUp DAVI";
+            } else if (statementDesc.length() > 13) {
+                statementDesc = statementDesc.substring(0, 13).trim();
+            }
         }
 
         MpOrderRequest.OnlineConfig onlineConfig = MpOrderRequest.OnlineConfig.builder()
@@ -1964,19 +1969,25 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
     private String resolveDefaultStatementDescriptor(String arenaId) {
         if (mercadoPagoProperties.getStatementDescriptor() != null
                 && !mercadoPagoProperties.getStatementDescriptor().isBlank()) {
-            return mercadoPagoProperties.getStatementDescriptor().trim();
+            String desc = mercadoPagoProperties.getStatementDescriptor().trim();
+            String lower = desc.toLowerCase();
+            if (lower.contains("daviarena") || lower.contains("daviar")) {
+                return "BiteUp DAVI";
+            }
+            return desc.length() > 13 ? desc.substring(0, 13).trim() : desc;
         }
-        String arenaName = "DAVIarena";
+        String arenaName = "DAVI";
         if (arenaId != null && !arenaId.isBlank()) {
             if ("2".equals(arenaId.trim()) || "movistar".equalsIgnoreCase(arenaId.trim())) {
-                arenaName = "MovistarArena";
+                arenaName = "MOVI";
             } else if ("1".equals(arenaId.trim()) || arenaId.trim().toLowerCase().startsWith("davi")) {
-                arenaName = "DAVIarena";
+                arenaName = "DAVI";
             } else if (!arenaId.trim().matches("\\d+")) {
                 arenaName = arenaId.trim();
             }
         }
-        return "BiteUp " + arenaName;
+        String descriptor = "BiteUp " + arenaName;
+        return descriptor.length() > 13 ? descriptor.substring(0, 13).trim() : descriptor;
     }
 
     private String obtenerFechaRegistroUsuarioAuth(Long usuarioId) {

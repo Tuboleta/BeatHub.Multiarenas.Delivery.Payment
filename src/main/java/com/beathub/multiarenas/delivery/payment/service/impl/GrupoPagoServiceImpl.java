@@ -394,10 +394,9 @@ public class GrupoPagoServiceImpl implements GrupoPagoService {
             return mapearAGrupoPagoResponse(grupoPago, usuarioId);
         }
 
-        BigDecimal montoAsignado = request != null ? request.getMontoAsignado() : null;
-        if (montoAsignado == null && !"LIBRE_PAGO".equalsIgnoreCase(grupoPago.getModalidadDivision())) {
-            montoAsignado = grupoPago.getMontoPreasignado();
-        }
+        BigDecimal montoAsignado = !"LIBRE_PAGO".equalsIgnoreCase(grupoPago.getModalidadDivision())
+                ? grupoPago.getMontoPreasignado()
+                : (request != null ? request.getMontoAsignado() : null);
 
         GrupoPagoUsuario nuevoMiembro = GrupoPagoUsuario.builder()
                 .grupoPago(grupoPago)
@@ -597,12 +596,10 @@ public class GrupoPagoServiceImpl implements GrupoPagoService {
                 throw new BadRequestException("El monto a aportar ($" + montoAPagar + ") no puede superar el saldo pendiente del pedido ($" + grupoPago.getSaldoPendiente() + ").");
             }
         } else {
-            // Cuando es por partes iguales, el valor está preasignado por el sistema
-            if (montoAPagar == null) {
-                BigDecimal cuota = gpu.getMontoAsignado() != null ? gpu.getMontoAsignado() : grupoPago.getMontoPreasignado();
-                BigDecimal pagado = gpu.getMontoPagado() != null ? gpu.getMontoPagado() : BigDecimal.ZERO;
-                montoAPagar = (cuota != null) ? cuota.subtract(pagado).max(BigDecimal.ZERO) : grupoPago.getSaldoPendiente();
-            }
+            // Cuando es por partes iguales, el valor está preasignado por el sistema (ignorar cualquier monto arbitrario)
+            BigDecimal cuota = gpu.getMontoAsignado() != null ? gpu.getMontoAsignado() : grupoPago.getMontoPreasignado();
+            BigDecimal pagado = gpu.getMontoPagado() != null ? gpu.getMontoPagado() : BigDecimal.ZERO;
+            montoAPagar = (cuota != null) ? cuota.subtract(pagado).max(BigDecimal.ZERO) : grupoPago.getSaldoPendiente();
 
             // Si el participante ya pagó su cuota pero desea liquidar el saldo restante del grupo:
             if ((montoAPagar == null || montoAPagar.compareTo(BigDecimal.ZERO) <= 0)

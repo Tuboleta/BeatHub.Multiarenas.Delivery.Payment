@@ -393,6 +393,13 @@ class PaymentServiceImplTest {
                 eq(5L)
         )).thenReturn(regResp);
 
+        com.beathub.multiarenas.delivery.payment.client.dto.PedidoClientResponse pedResp =
+                new com.beathub.multiarenas.delivery.payment.client.dto.PedidoClientResponse();
+        pedResp.setId(44L);
+        pedResp.setUsuarioId(5L);
+        pedResp.setValorTotal(new BigDecimal("18600.00"));
+        when(orderingClient.getPedido(eq(44L), any())).thenReturn(Optional.of(pedResp));
+
         com.beathub.multiarenas.delivery.payment.dto.request.InitPaymentRequest req = new com.beathub.multiarenas.delivery.payment.dto.request.InitPaymentRequest();
         req.setPedidoId(44L);
         req.setMonto(new BigDecimal("18600.00"));
@@ -445,6 +452,13 @@ class PaymentServiceImplTest {
                 eq("1"),
                 eq(5L)
         )).thenReturn(regResp);
+
+        com.beathub.multiarenas.delivery.payment.client.dto.PedidoClientResponse pedResp =
+                new com.beathub.multiarenas.delivery.payment.client.dto.PedidoClientResponse();
+        pedResp.setId(44L);
+        pedResp.setUsuarioId(5L);
+        pedResp.setValorTotal(new BigDecimal("18600.00"));
+        when(orderingClient.getPedido(eq(44L), any())).thenReturn(Optional.of(pedResp));
 
         com.beathub.multiarenas.delivery.payment.dto.request.InitPaymentRequest req = new com.beathub.multiarenas.delivery.payment.dto.request.InitPaymentRequest();
         req.setPedidoId(44L);

@@ -95,29 +95,52 @@ public class PaymentServiceImpl implements PaymentService {
             log.warn("No se pudo serializar extraParams: {}", e.getMessage());
         }
 
-        // C-05: El monto del pago se valida contra el total real en Ordering
+        // BU-03: Validación estricta y sincronización del monto contra Ordering (Fail-Closed)
         if (request.getPedidoId() != null) {
+            com.beathub.multiarenas.delivery.payment.client.dto.PedidoClientResponse pedido;
             try {
-                com.beathub.multiarenas.delivery.payment.client.dto.PedidoClientResponse pedido = orderingClient
-                        .getPedido(request.getPedidoId(), null).orElse(null);
-                if (pedido != null) {
-                    if (pedido.getUsuarioId() != null && !pedido.getUsuarioId().equals(usuarioId)
-                            && request.getGrupoPagoUsuarioId() == null) {
-                        throw new PaymentException("El pedido no pertenece al usuario autenticado");
-                    }
-                    if (request.getGrupoPagoUsuarioId() == null && pedido.getValorTotal() != null
-                            && pedido.getValorTotal().compareTo(BigDecimal.ZERO) > 0) {
-                        if (request.getMonto() == null || request.getMonto().compareTo(pedido.getValorTotal()) != 0) {
-                            log.info("Monto de pago sincronizado con valor oficial del pedido: {} -> {}",
-                                    request.getMonto(), pedido.getValorTotal());
-                            request.setMonto(pedido.getValorTotal());
-                        }
-                    }
-                }
+                pedido = orderingClient.getPedido(request.getPedidoId(), null)
+                        .orElseThrow(() -> new PaymentException("Pedido #" + request.getPedidoId() + " no encontrado en el servicio de órdenes."));
             } catch (PaymentException pe) {
                 throw pe;
             } catch (Exception ex) {
-                log.warn("No se pudo validar el pedido con Ordering: {}", ex.getMessage());
+                log.error("[BU-03] Error consultando Ordering para pedido #{}: {}", request.getPedidoId(), ex.getMessage());
+                throw new PaymentException("El servicio de órdenes no está disponible. No se puede iniciar el pago.");
+            }
+
+            if (pedido.getValorTotal() == null || pedido.getValorTotal().compareTo(BigDecimal.ZERO) <= 0) {
+                throw new PaymentException("El pedido no tiene un monto válido para pago.");
+            }
+
+            if (request.getGrupoPagoUsuarioId() == null) {
+                if (pedido.getUsuarioId() != null && !pedido.getUsuarioId().equals(usuarioId)) {
+                    throw new PaymentException("El pedido no pertenece al usuario autenticado");
+                }
+                if (request.getMonto() != null && request.getMonto().compareTo(pedido.getValorTotal()) != 0) {
+                    log.warn("[BU-03] Monto manipulado por el cliente ({}). Reemplazado por el valor oficial: {}",
+                            request.getMonto(), pedido.getValorTotal());
+                }
+                request.setMonto(pedido.getValorTotal());
+            } else {
+                if (grupoPagoUsuario == null) {
+                    throw new PaymentException("La cuota de pago grupal especificada no existe.");
+                }
+                if (grupoPagoUsuario.getUsuarioId() != null
+                        && !grupoPagoUsuario.getUsuarioId().equals(0L)
+                        && !grupoPagoUsuario.getUsuarioId().equals(usuarioId)) {
+                    throw new PaymentException("La cuota de pago grupal no pertenece al usuario autenticado");
+                }
+                BigDecimal asignado = grupoPagoUsuario.getMontoAsignado() != null
+                        ? grupoPagoUsuario.getMontoAsignado()
+                        : pedido.getValorTotal();
+                BigDecimal pagado = grupoPagoUsuario.getMontoPagado() != null
+                        ? grupoPagoUsuario.getMontoPagado()
+                        : BigDecimal.ZERO;
+                BigDecimal saldoCuota = asignado.subtract(pagado);
+                if (saldoCuota.compareTo(BigDecimal.ZERO) <= 0) {
+                    throw new PaymentException("La cuota de pago grupal ya se encuentra saldada.");
+                }
+                request.setMonto(saldoCuota);
             }
         }
 

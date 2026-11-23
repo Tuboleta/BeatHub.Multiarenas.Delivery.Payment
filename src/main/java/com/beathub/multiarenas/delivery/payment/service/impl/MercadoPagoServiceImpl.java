@@ -72,30 +72,52 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
                 ? grupoPagoUsuarioRepository.findById(request.getGrupoPagoUsuarioId()).orElse(null)
                 : null;
 
-        // Validar monto contra servicio Ordering y cargar datos del pedido
+        // BU-03: Validación estricta y sincronización del monto contra Ordering (Fail-Closed)
         PedidoClientResponse pedidoInfo = null;
         if (request.getPedidoId() != null) {
             try {
-                pedidoInfo = orderingClient.getPedido(request.getPedidoId(), null).orElse(null);
-                if (pedidoInfo != null) {
-                    if (pedidoInfo.getUsuarioId() != null && !pedidoInfo.getUsuarioId().equals(usuarioId)
-                            && request.getGrupoPagoUsuarioId() == null) {
-                        throw new PaymentException("El pedido no pertenece al usuario autenticado");
-                    }
-                    if (request.getGrupoPagoUsuarioId() == null && pedidoInfo.getValorTotal() != null
-                            && pedidoInfo.getValorTotal().compareTo(BigDecimal.ZERO) > 0) {
-                        if (request.getMonto() == null
-                                || request.getMonto().compareTo(pedidoInfo.getValorTotal()) != 0) {
-                            log.info("Monto de pago Mercado Pago sincronizado con valor oficial del pedido: {} -> {}",
-                                    request.getMonto(), pedidoInfo.getValorTotal());
-                            request.setMonto(pedidoInfo.getValorTotal());
-                        }
-                    }
-                }
+                pedidoInfo = orderingClient.getPedido(request.getPedidoId(), null)
+                        .orElseThrow(() -> new PaymentException("Pedido #" + request.getPedidoId() + " no encontrado en el servicio de órdenes."));
             } catch (PaymentException pe) {
                 throw pe;
             } catch (Exception ex) {
-                log.warn("No se pudo validar el pedido con Ordering para Mercado Pago: {}", ex.getMessage());
+                log.error("[BU-03] Error consultando Ordering para pedido #{}: {}", request.getPedidoId(), ex.getMessage());
+                throw new PaymentException("El servicio de órdenes no está disponible. No se puede iniciar el pago.");
+            }
+
+            if (pedidoInfo.getValorTotal() == null || pedidoInfo.getValorTotal().compareTo(BigDecimal.ZERO) <= 0) {
+                throw new PaymentException("El pedido no tiene un monto válido para pago.");
+            }
+
+            if (request.getGrupoPagoUsuarioId() == null) {
+                if (pedidoInfo.getUsuarioId() != null && !pedidoInfo.getUsuarioId().equals(usuarioId)) {
+                    throw new PaymentException("El pedido no pertenece al usuario autenticado");
+                }
+                if (request.getMonto() != null && request.getMonto().compareTo(pedidoInfo.getValorTotal()) != 0) {
+                    log.warn("[BU-03] Monto manipulado por el cliente en MP ({}). Reemplazado por oficial: {}",
+                            request.getMonto(), pedidoInfo.getValorTotal());
+                }
+                request.setMonto(pedidoInfo.getValorTotal());
+            } else {
+                if (grupoPagoUsuario == null) {
+                    throw new PaymentException("La cuota de pago grupal especificada no existe.");
+                }
+                if (grupoPagoUsuario.getUsuarioId() != null
+                        && !grupoPagoUsuario.getUsuarioId().equals(0L)
+                        && !grupoPagoUsuario.getUsuarioId().equals(usuarioId)) {
+                    throw new PaymentException("La cuota de pago grupal no pertenece al usuario autenticado");
+                }
+                BigDecimal asignado = grupoPagoUsuario.getMontoAsignado() != null
+                        ? grupoPagoUsuario.getMontoAsignado()
+                        : pedidoInfo.getValorTotal();
+                BigDecimal pagado = grupoPagoUsuario.getMontoPagado() != null
+                        ? grupoPagoUsuario.getMontoPagado()
+                        : BigDecimal.ZERO;
+                BigDecimal saldoCuota = asignado.subtract(pagado);
+                if (saldoCuota.compareTo(BigDecimal.ZERO) <= 0) {
+                    throw new PaymentException("La cuota de pago grupal ya se encuentra saldada.");
+                }
+                request.setMonto(saldoCuota);
             }
         }
 
@@ -1733,6 +1755,24 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
                 grupoPagoRepository.save(gp);
             }
         } else {
+            // BU-03: Validar que el monto aprobado por la pasarela coincida con el del pedido antes de marcarlo como pagado
+            if (pedidoPago.getPedidoId() != null && pedidoPago.getGrupoPagoUsuario() == null) {
+                try {
+                    PedidoClientResponse pedidoReal = orderingClient.getPedido(pedidoPago.getPedidoId(), null).orElse(null);
+                    if (pedidoReal != null && pedidoReal.getValorTotal() != null) {
+                        if (pedidoPago.getMonto() == null || pedidoPago.getMonto().compareTo(pedidoReal.getValorTotal()) < 0) {
+                            log.error("[BU-03] Discrepancia de monto en webhook MP: pagado={} vs pedido={}. NO se confirma a Ordering.",
+                                    pedidoPago.getMonto(), pedidoReal.getValorTotal());
+                            pedidoPago.setEstadoId(PedidoPago.ESTADO_RECHAZADO);
+                            pedidoPagoRepository.save(pedidoPago);
+                            return;
+                        }
+                    }
+                } catch (Exception ex) {
+                    log.warn("Aviso revalidando monto con Ordering en webhook MP: {}", ex.getMessage());
+                }
+            }
+
             // Notificar a Ordering (estado 23: Aprobado / Pagado)
             orderingClient.updateOrderStatus(pedidoPago.getPedidoId(), PedidoPago.ESTADO_APROBADO, detailMessage, null,
                     effectiveAuth, terminal,

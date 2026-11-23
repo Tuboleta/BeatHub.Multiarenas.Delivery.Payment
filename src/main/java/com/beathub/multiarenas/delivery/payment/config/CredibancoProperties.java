@@ -9,9 +9,9 @@ import org.springframework.context.annotation.Configuration;
 @ConfigurationProperties(prefix = "credibanco")
 public class CredibancoProperties {
     private String baseUrl = "https://ecouat.credibanco.com/payment/rest";
-    private String username = "TEST_USER";
-    private String password = "TEST_PASSWORD";
-    private String secretKeyHmac = "TEST_CALLBACK_KEY";
+    private String username;
+    private String password;
+    private String secretKeyHmac;
     private String currencyCode = "170";
     private Integer sessionTimeoutSecs = 1200;
     private String defaultReturnUrl;

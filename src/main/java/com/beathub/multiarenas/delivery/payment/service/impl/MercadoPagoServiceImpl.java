@@ -72,16 +72,19 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
                 ? grupoPagoUsuarioRepository.findById(request.getGrupoPagoUsuarioId()).orElse(null)
                 : null;
 
-        // BU-03: Validación estricta y sincronización del monto contra Ordering (Fail-Closed)
+        // BU-03: Validación estricta y sincronización del monto contra Ordering
+        // (Fail-Closed)
         PedidoClientResponse pedidoInfo = null;
         if (request.getPedidoId() != null) {
             try {
                 pedidoInfo = orderingClient.getPedido(request.getPedidoId(), null)
-                        .orElseThrow(() -> new PaymentException("Pedido #" + request.getPedidoId() + " no encontrado en el servicio de órdenes."));
+                        .orElseThrow(() -> new PaymentException(
+                                "Pedido #" + request.getPedidoId() + " no encontrado en el servicio de órdenes."));
             } catch (PaymentException pe) {
                 throw pe;
             } catch (Exception ex) {
-                log.error("[BU-03] Error consultando Ordering para pedido #{}: {}", request.getPedidoId(), ex.getMessage());
+                log.error("[BU-03] Error consultando Ordering para pedido #{}: {}", request.getPedidoId(),
+                        ex.getMessage());
                 throw new PaymentException("El servicio de órdenes no está disponible. No se puede iniciar el pago.");
             }
 
@@ -101,6 +104,10 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
             } else {
                 if (grupoPagoUsuario == null) {
                     throw new PaymentException("La cuota de pago grupal especificada no existe.");
+                }
+                if (grupoPagoUsuario.getGrupoPago() != null
+                        && !request.getPedidoId().equals(grupoPagoUsuario.getGrupoPago().getPedidoId())) {
+                    throw new PaymentException("La cuota de pago grupal no corresponde al pedido indicado.");
                 }
                 if (grupoPagoUsuario.getUsuarioId() != null
                         && !grupoPagoUsuario.getUsuarioId().equals(0L)
@@ -1039,7 +1046,7 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
         String referenciaPago = "MP-REC-" + System.currentTimeMillis() + "-"
                 + UUID.randomUUID().toString().substring(0, 6).toUpperCase();
 
-        // 1. Buscar la tarjeta tokenizada guardada
+        // 1. Buscar la tarjeta tokenizada guardada (Aislamiento estricto por usuario - CRIT-05)
         TarjetaClientePago tarjeta = null;
         if (request.getBindingId().matches("\\d+")) {
             Long cardId = Long.valueOf(request.getBindingId());
@@ -1051,11 +1058,12 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
         if (tarjeta == null) {
             tarjeta = tarjetaClientePagoRepository.findByMpCardId(request.getBindingId())
                     .or(() -> tarjetaClientePagoRepository.findByMpPaymentProfileId(request.getBindingId()))
+                    .filter(t -> t.getClientePago() != null && usuarioId.equals(t.getClientePago().getArenaUsuarioId()))
                     .orElse(null);
         }
         if (tarjeta == null) {
             throw new PaymentException(
-                    "No se encontrÃƒÂ³ la tarjeta asociada con el identificador: " + request.getBindingId());
+                    "No se encontró la tarjeta asociada o no pertenece al usuario autenticado: " + request.getBindingId());
         }
 
         ClientePago cliente = tarjeta.getClientePago();
@@ -1077,6 +1085,59 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
         GrupoPagoUsuario grupoPagoUsuario = request.getGrupoPagoUsuarioId() != null
                 ? grupoPagoUsuarioRepository.findById(request.getGrupoPagoUsuarioId()).orElse(null)
                 : null;
+
+        // BU-03 / CRIT-04: Validación estricta y sincronización del monto contra Ordering en payWithToken (Fail-Closed)
+        if (request.getPedidoId() != null) {
+            PedidoClientResponse pedidoInfo;
+            try {
+                pedidoInfo = orderingClient.getPedido(request.getPedidoId(), null)
+                        .orElseThrow(() -> new PaymentException("Pedido #" + request.getPedidoId() + " no encontrado en el servicio de órdenes."));
+            } catch (PaymentException pe) {
+                throw pe;
+            } catch (Exception ex) {
+                log.error("[BU-03] Error consultando Ordering para pedido #{}: {}", request.getPedidoId(), ex.getMessage());
+                throw new PaymentException("El servicio de órdenes no está disponible. No se puede iniciar el pago.");
+            }
+
+            if (pedidoInfo.getValorTotal() == null || pedidoInfo.getValorTotal().compareTo(BigDecimal.ZERO) <= 0) {
+                throw new PaymentException("El pedido no tiene un monto válido para pago.");
+            }
+
+            if (request.getGrupoPagoUsuarioId() == null) {
+                if (pedidoInfo.getUsuarioId() != null && !pedidoInfo.getUsuarioId().equals(usuarioId)) {
+                    throw new PaymentException("El pedido no pertenece al usuario autenticado");
+                }
+                if (request.getMonto() != null && request.getMonto().compareTo(pedidoInfo.getValorTotal()) != 0) {
+                    log.warn("[BU-03] Monto manipulado por el cliente en MP payWithToken ({}). Reemplazado por oficial: {}",
+                            request.getMonto(), pedidoInfo.getValorTotal());
+                }
+                request.setMonto(pedidoInfo.getValorTotal());
+            } else {
+                if (grupoPagoUsuario == null) {
+                    throw new PaymentException("La cuota de pago grupal especificada no existe.");
+                }
+                if (grupoPagoUsuario.getGrupoPago() != null
+                        && !request.getPedidoId().equals(grupoPagoUsuario.getGrupoPago().getPedidoId())) {
+                    throw new PaymentException("La cuota de pago grupal no corresponde al pedido indicado.");
+                }
+                if (grupoPagoUsuario.getUsuarioId() != null
+                        && !grupoPagoUsuario.getUsuarioId().equals(0L)
+                        && !grupoPagoUsuario.getUsuarioId().equals(usuarioId)) {
+                    throw new PaymentException("La cuota de pago grupal no pertenece al usuario autenticado");
+                }
+                BigDecimal asignado = grupoPagoUsuario.getMontoAsignado() != null
+                        ? grupoPagoUsuario.getMontoAsignado()
+                        : pedidoInfo.getValorTotal();
+                BigDecimal pagado = grupoPagoUsuario.getMontoPagado() != null
+                        ? grupoPagoUsuario.getMontoPagado()
+                        : BigDecimal.ZERO;
+                BigDecimal saldoCuota = asignado.subtract(pagado);
+                if (saldoCuota.compareTo(BigDecimal.ZERO) <= 0) {
+                    throw new PaymentException("La cuota de pago grupal ya se encuentra saldada.");
+                }
+                request.setMonto(saldoCuota);
+            }
+        }
 
         // 3. Crear registro PedidoPago local
         PedidoPago pedidoPago = PedidoPago.builder()
@@ -1353,9 +1414,13 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
         log.info("[MercadoPago Webhook] Recibido payload: {}, xSignature={}, xRequestId={}, dataId={}",
                 rawBody, xSignature, xRequestId, dataId);
 
-        // 1. Validar firma HMAC SHA-256 si viene configurada
+        // 1. Validar firma HMAC SHA-256 obligatoria si secret está configurado (ALTA-01)
         String secret = mercadoPagoProperties.getWebhookSecret();
-        if (secret != null && !secret.isBlank() && xSignature != null && xRequestId != null) {
+        if (secret != null && !secret.isBlank()) {
+            if (xSignature == null || xSignature.isBlank() || xRequestId == null || xRequestId.isBlank()) {
+                log.error("[MercadoPago Webhook] Headers de firma ausentes (x-signature={}, x-request-id={})", xSignature, xRequestId);
+                throw new PaymentException("Headers de autenticación x-signature y x-request-id son obligatorios");
+            }
             validateWebhookSignature(secret, rawBody, xSignature, xRequestId, dataId);
         }
 
@@ -1473,8 +1538,22 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
             String ts = parts.get("ts");
             String receivedSignature = parts.get("v1");
             if (ts == null || receivedSignature == null) {
-                log.warn("[MercadoPago Webhook] x-signature invÃƒÂ¡lido o incompleto");
-                return;
+                log.error("[MercadoPago Webhook] x-signature inválido o incompleto");
+                throw new PaymentException("Header x-signature incompleto o inválido en webhook");
+            }
+
+            // Ventana anti-replay de 5 minutos
+            try {
+                long tsSeconds = Long.parseLong(ts);
+                long nowSeconds = System.currentTimeMillis() / 1000;
+                if (Math.abs(nowSeconds - tsSeconds) > 300) {
+                    log.error("[MercadoPago Webhook] Timestamp x-signature desfasado (ts: {}, actual: {})", ts,
+                            nowSeconds);
+                    throw new PaymentException("Timestamp x-signature fuera de la ventana de validez permitida");
+                }
+            } catch (NumberFormatException nfe) {
+                log.error("[MercadoPago Webhook] Timestamp inválido en x-signature: {}", ts);
+                throw new PaymentException("Timestamp numérico requerido en x-signature");
             }
 
             String resolvedId = dataId != null ? dataId : "";
@@ -1488,12 +1567,16 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
             String manifest = "id:" + resolvedId.toLowerCase() + ";request-id:" + xRequestId + ";ts:" + ts + ";";
             boolean valid = hmacSignatureService.verifySignature(secret, manifest, receivedSignature);
             if (!valid) {
-                log.warn("[MercadoPago Webhook] Firma HMAC SHA256 no coincidiÃƒÂ³ con el secreto");
+                log.error("[MercadoPago Webhook] Firma HMAC SHA256 no coincidió con el secreto");
+                throw new PaymentException("Firma HMAC SHA-256 no coincide con el webhook recibido");
             } else {
                 log.info("[MercadoPago Webhook] Firma HMAC SHA256 verificada exitosamente");
             }
+        } catch (PaymentException pe) {
+            throw pe;
         } catch (Exception ex) {
-            log.warn("[MercadoPago Webhook] ExcepciÃƒÂ³n verificando firma de webhook: {}", ex.getMessage());
+            log.error("[MercadoPago Webhook] Excepción verificando firma de webhook: {}", ex.getMessage());
+            throw new PaymentException("Error validando firma HMAC del webhook: " + ex.getMessage());
         }
     }
 
@@ -1755,21 +1838,29 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
                 grupoPagoRepository.save(gp);
             }
         } else {
-            // BU-03: Validar que el monto aprobado por la pasarela coincida con el del pedido antes de marcarlo como pagado
+            // BU-03: Validar que el monto aprobado por la pasarela coincida con el del
+            // pedido antes de marcarlo como pagado
             if (pedidoPago.getPedidoId() != null && pedidoPago.getGrupoPagoUsuario() == null) {
                 try {
-                    PedidoClientResponse pedidoReal = orderingClient.getPedido(pedidoPago.getPedidoId(), null).orElse(null);
+                    PedidoClientResponse pedidoReal = orderingClient.getPedido(pedidoPago.getPedidoId(), null)
+                            .orElse(null);
                     if (pedidoReal != null && pedidoReal.getValorTotal() != null) {
-                        if (pedidoPago.getMonto() == null || pedidoPago.getMonto().compareTo(pedidoReal.getValorTotal()) < 0) {
-                            log.error("[BU-03] Discrepancia de monto en webhook MP: pagado={} vs pedido={}. NO se confirma a Ordering.",
+                        if (pedidoPago.getMonto() == null
+                                || pedidoPago.getMonto().compareTo(pedidoReal.getValorTotal()) < 0) {
+                            log.error(
+                                    "[BU-03] Discrepancia de monto en webhook MP: pagado={} vs pedido={}. NO se confirma a Ordering.",
                                     pedidoPago.getMonto(), pedidoReal.getValorTotal());
                             pedidoPago.setEstadoId(PedidoPago.ESTADO_RECHAZADO);
                             pedidoPagoRepository.save(pedidoPago);
                             return;
                         }
                     }
+                } catch (PaymentException pe) {
+                    throw pe;
                 } catch (Exception ex) {
-                    log.warn("Aviso revalidando monto con Ordering en webhook MP: {}", ex.getMessage());
+                    log.error("[BU-03] Error revalidando monto con Ordering en webhook MP: {}", ex.getMessage());
+                    throw new PaymentException(
+                            "Error validando la integridad del monto del pedido con el servicio de órdenes");
                 }
             }
 

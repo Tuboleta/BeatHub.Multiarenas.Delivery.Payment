@@ -19,6 +19,7 @@ public class PedidoClientResponse {
     private Long usuarioId;
     private String arenaId;
     private Long grupoPagoId;
+    private String grupoPedidoId;
     private BigDecimal valorTotal;
     private Integer estadoId;
 

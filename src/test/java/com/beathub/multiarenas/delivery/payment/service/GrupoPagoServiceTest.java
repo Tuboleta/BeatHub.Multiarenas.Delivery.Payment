@@ -243,6 +243,87 @@ class GrupoPagoServiceTest {
     }
 
     @Test
+    @DisplayName("Debe crear la vaca por el total de todos los pedidos cuando el pedido se dividió en varias barras")
+    void crearGrupo_MultiplesBarras_SumaTodosLosPedidosDelGrupo() {
+        CrearGrupoPagoRequest request = CrearGrupoPagoRequest.builder()
+                .pedidoId(55L)
+                .grupoPedidoId("GRP-MULTI-01")
+                .pedidoIds(List.of(56L))
+                .divisionTipo("POR_PARTES_IGUALES")
+                .cantidadPersonas(2)
+                .build();
+
+        PedidoClientResponse pedidoPrincipal = PedidoClientResponse.builder()
+                .id(55L)
+                .arenaId("ARENA-BOG-01")
+                .grupoPedidoId("GRP-MULTI-01")
+                .valorTotal(new BigDecimal("92000.00"))
+                .estadoId(12)
+                .build();
+        PedidoClientResponse pedidoOtraBarra = PedidoClientResponse.builder()
+                .id(56L)
+                .arenaId("ARENA-BOG-01")
+                .grupoPedidoId("GRP-MULTI-01")
+                .valorTotal(new BigDecimal("13000.00"))
+                .estadoId(12)
+                .build();
+
+        when(grupoPagoRepository.findByPedidoIdAndEstadoId(55L, 1)).thenReturn(Optional.empty());
+        when(orderingClient.getPedido(eq(55L), any())).thenReturn(Optional.of(pedidoPrincipal));
+        when(orderingClient.getPedido(eq(56L), any())).thenReturn(Optional.of(pedidoOtraBarra));
+        when(tipoGrupoPagoRepository.findById(anyInt())).thenReturn(Optional.of(tipoGrupoPago));
+        when(grupoPagoRepository.findByCodigoUnico(anyString())).thenReturn(Optional.empty());
+        when(grupoPagoRepository.save(any(GrupoPago.class))).thenAnswer(inv -> {
+            GrupoPago gp = inv.getArgument(0);
+            gp.setId(102L);
+            return gp;
+        });
+        when(grupoPagoUsuarioRepository.findByGrupoPagoId(anyLong())).thenReturn(List.of(grupoPagoUsuario));
+        when(pedidoPagoRepository.findByGrupoPagoUsuario_GrupoPago_Id(anyLong())).thenReturn(Collections.emptyList());
+        when(qrCodeGeneratorService.generateQrCodeBase64(anyString(), anyInt(), anyInt())).thenReturn("data:image/png;base64,mockQrCode");
+
+        GrupoPagoResponse response = grupoPagoService.crearGrupo(request, "ARENA-BOG-01", 10L, "mock-token");
+
+        assertEquals(new BigDecimal("105000.00"), response.getValorTotal());
+        assertEquals(new BigDecimal("105000.00"), response.getSaldoPendiente());
+        assertEquals(new BigDecimal("52500.00"), response.getMontoPreasignado());
+        verify(orderingClient).asociarGrupoPago(eq(55L), eq(102L), any());
+        verify(orderingClient).asociarGrupoPago(eq(56L), eq(102L), any());
+    }
+
+    @Test
+    @DisplayName("Debe rechazar la vaca si uno de los pedidos indicados no pertenece al mismo grupo")
+    void crearGrupo_MultiplesBarras_Falla_SiPedidoEsDeOtroGrupo() {
+        CrearGrupoPagoRequest request = CrearGrupoPagoRequest.builder()
+                .pedidoId(55L)
+                .pedidoIds(List.of(55L, 77L))
+                .build();
+
+        PedidoClientResponse pedidoPrincipal = PedidoClientResponse.builder()
+                .id(55L)
+                .grupoPedidoId("GRP-MULTI-01")
+                .valorTotal(new BigDecimal("92000.00"))
+                .estadoId(12)
+                .build();
+        PedidoClientResponse pedidoAjeno = PedidoClientResponse.builder()
+                .id(77L)
+                .grupoPedidoId("GRP-OTRO-99")
+                .valorTotal(new BigDecimal("50000.00"))
+                .estadoId(12)
+                .build();
+
+        when(grupoPagoRepository.findByPedidoIdAndEstadoId(55L, 1)).thenReturn(Optional.empty());
+        when(orderingClient.getPedido(eq(55L), any())).thenReturn(Optional.of(pedidoPrincipal));
+        when(orderingClient.getPedido(eq(77L), any())).thenReturn(Optional.of(pedidoAjeno));
+
+        assertThrows(BadRequestException.class, () ->
+                grupoPagoService.crearGrupo(request, "ARENA-BOG-01", 10L, "mock-token"));
+
+        verify(grupoPagoRepository, never()).save(any());
+        verify(orderingClient, never()).asociarGrupoPago(anyLong(), anyLong(), any());
+    }
+
+    @Test
     @DisplayName("Debe consultar grupo de pago por código único")
     void obtenerPorCodigo_Exitoso() {
         when(grupoPagoRepository.findByCodigoUnico("VACA-TEST01")).thenReturn(Optional.of(grupoPago));

@@ -92,6 +92,36 @@ public class GrupoPagoServiceImpl implements GrupoPagoService {
                     request.getPedidoId(), valorTotal);
         }
 
+        // Pedido dividido en varias barras: la vaca cubre el valor de todos los pedidos del mismo grupo
+        Set<Long> pedidosVaca = new LinkedHashSet<>();
+        pedidosVaca.add(request.getPedidoId());
+        boolean valorDesdeOrdering = pedidoOpt.isPresent() && pedidoOpt.get().getValorTotal() != null
+                && pedidoOpt.get().getValorTotal().compareTo(BigDecimal.ZERO) > 0;
+        if (valorDesdeOrdering && request.getPedidoIds() != null && !request.getPedidoIds().isEmpty()) {
+            String grupoPedidoPrincipal = pedidoOpt.get().getGrupoPedidoId();
+            if (grupoPedidoPrincipal == null || grupoPedidoPrincipal.isBlank()
+                    || (request.getGrupoPedidoId() != null && !grupoPedidoPrincipal.equals(request.getGrupoPedidoId()))) {
+                throw new BadRequestException("Los pedidos indicados no pertenecen al mismo grupo del pedido #" + request.getPedidoId());
+            }
+            for (Long otroPedidoId : request.getPedidoIds()) {
+                if (otroPedidoId == null || !pedidosVaca.add(otroPedidoId)) {
+                    continue;
+                }
+                PedidoClientResponse otroPedido = orderingClient.getPedido(otroPedidoId, authToken)
+                        .orElseThrow(() -> new ResourceNotFoundException("No se encontró el pedido #" + otroPedidoId
+                                + " en el sistema de órdenes. Verifique que el ID del pedido sea correcto."));
+                if (!grupoPedidoPrincipal.equals(otroPedido.getGrupoPedidoId())) {
+                    throw new BadRequestException("El pedido #" + otroPedidoId + " no pertenece al mismo grupo del pedido #" + request.getPedidoId());
+                }
+                if (otroPedido.getEstadoId() != null && (otroPedido.getEstadoId().equals(13) || otroPedido.getEstadoId().equals(18))) {
+                    throw new BadRequestException("El pedido #" + otroPedidoId + " ya se encuentra pagado o entregado (Estado: " + otroPedido.getEstadoId() + ")");
+                }
+                if (otroPedido.getValorTotal() != null && otroPedido.getValorTotal().compareTo(BigDecimal.ZERO) > 0) {
+                    valorTotal = valorTotal.add(otroPedido.getValorTotal());
+                }
+            }
+        }
+
         if (valorTotal.compareTo(BigDecimal.ZERO) <= 0) {
             throw new BadRequestException("El valor total del pedido a dividir debe ser mayor a 0.");
         }
@@ -250,8 +280,10 @@ public class GrupoPagoServiceImpl implements GrupoPagoService {
             }
         }
 
-        // Notificar a Ordering Service para vincular el grupo al pedido
-        orderingClient.asociarGrupoPago(request.getPedidoId(), grupoPago.getId(), authToken);
+        // Notificar a Ordering Service para vincular el grupo a cada pedido que cubre la vaca
+        for (Long pedidoVacaId : pedidosVaca) {
+            orderingClient.asociarGrupoPago(pedidoVacaId, grupoPago.getId(), authToken);
+        }
 
         // Despachar invitaciones asíncronas de notificación (Flujo 8: VACA_INVITATION)
         if (request.getParticipantes() != null && !request.getParticipantes().isEmpty()) {

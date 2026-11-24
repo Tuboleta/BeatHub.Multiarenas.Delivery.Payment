@@ -21,6 +21,14 @@ public class CrearGrupoPagoRequest {
     private Long pedidoId;
 
     /**
+     * Opcional: pedido dividido en varias barras. Código que une los pedidos
+     * y lista de los pedidos del grupo que la vaca debe cubrir junto al pedidoId.
+     */
+    private String grupoPedidoId;
+
+    private List<Long> pedidoIds;
+
+    /**
      * Opcional: ID de un grupo permanente ya existente (ej. Palco fijo, familia)
      * para reutilizarlo en este nuevo pedido.
      */

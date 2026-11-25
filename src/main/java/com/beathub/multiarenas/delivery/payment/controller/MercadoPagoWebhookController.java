@@ -28,8 +28,8 @@ public class MercadoPagoWebhookController {
     private final PedidoPagoRepository pedidoPagoRepository;
     private final ObjectMapper objectMapper;
 
-    @PostMapping
-    @Operation(summary = "Recepción de webhooks de Mercado Pago", description = "Procesa notificaciones automáticas de pedidos y pagos de Mercado Pago")
+    @PostMapping(path = { "", "/davivienda" })
+    @Operation(summary = "Recepción de webhooks de Mercado Pago (Estándar y Davivienda)", description = "Procesa notificaciones automáticas de pedidos y pagos de Mercado Pago")
     public ResponseEntity<String> handleWebhook(
             @RequestHeader(value = "x-signature", required = false) String xSignature,
             @RequestHeader(value = "x-request-id", required = false) String xRequestId,
@@ -38,11 +38,11 @@ public class MercadoPagoWebhookController {
             @RequestParam(value = "type", required = false) String typeParam,
             @RequestParam(value = "topic", required = false) String topicParam,
             @RequestParam(required = false) Map<String, String> allParams,
-            @RequestBody(required = false) String rawBody
-    ) {
+            @RequestBody(required = false) String rawBody) {
         LocalDateTime startTime = LocalDateTime.now();
 
-        String finalDataId = dataIdParam != null ? dataIdParam : (idParam != null ? idParam : (allParams != null ? allParams.get("data_id") : null));
+        String finalDataId = dataIdParam != null ? dataIdParam
+                : (idParam != null ? idParam : (allParams != null ? allParams.get("data_id") : null));
 
         String detectedEvent = resolveEventType(typeParam, topicParam, rawBody);
         String operacionLog = "Webhook_MercadoPago_" + detectedEvent;
@@ -64,8 +64,10 @@ public class MercadoPagoWebhookController {
 
         Map<String, Object> payloadMap = new HashMap<>();
         Map<String, String> headersMap = new HashMap<>();
-        if (xRequestId != null) headersMap.put("x-request-id", xRequestId);
-        if (xSignature != null) headersMap.put("x-signature", xSignature);
+        if (xRequestId != null)
+            headersMap.put("x-request-id", xRequestId);
+        if (xSignature != null)
+            headersMap.put("x-signature", xSignature);
         payloadMap.put("headers", headersMap);
         if (allParams != null && !allParams.isEmpty()) {
             payloadMap.put("queryParams", allParams);
@@ -87,7 +89,8 @@ public class MercadoPagoWebhookController {
         try {
             mercadoPagoService.processWebhook(rawBody, xSignature, xRequestId, finalDataId);
 
-            log.info("[WEBHOOK MERCADOPAGO - NOTIFICACIÓN] Procesado con éxito: operacion={}, dataId={}", operacionLog, finalDataId);
+            log.info("[WEBHOOK MERCADOPAGO - NOTIFICACIÓN] Procesado con éxito: operacion={}, dataId={}", operacionLog,
+                    finalDataId);
 
             auditService.logWebhook(
                     IntegrationAuditService.SERVICIO_MERCADOPAGO,
@@ -99,10 +102,10 @@ public class MercadoPagoWebhookController {
                     startTime,
                     LocalDateTime.now(),
                     200,
-                    "SUCCESS"
-            );
+                    "SUCCESS");
         } catch (Exception ex) {
-            log.error("[WEBHOOK MERCADOPAGO - NOTIFICACIÓN] Error procesando notificación webhook: {}", ex.getMessage(), ex);
+            log.error("[WEBHOOK MERCADOPAGO - NOTIFICACIÓN] Error procesando notificación webhook: {}", ex.getMessage(),
+                    ex);
 
             auditService.logWebhook(
                     IntegrationAuditService.SERVICIO_MERCADOPAGO,
@@ -114,8 +117,7 @@ public class MercadoPagoWebhookController {
                     startTime,
                     LocalDateTime.now(),
                     500,
-                    "FAILED"
-            );
+                    "FAILED");
         }
 
         return ResponseEntity.ok("OK");
@@ -145,8 +147,7 @@ public class MercadoPagoWebhookController {
                 startTime,
                 LocalDateTime.now(),
                 200,
-                "SUCCESS"
-        );
+                "SUCCESS");
 
         return ResponseEntity.ok("OK");
     }
@@ -170,18 +171,24 @@ public class MercadoPagoWebhookController {
                 if (root.has("topic") && !root.get("topic").asText().isBlank()) {
                     return sanitizeEventName(root.get("topic").asText());
                 }
-            } catch (Exception ignored) {}
+            } catch (Exception ignored) {
+            }
         }
         return "Notification";
     }
 
     private String sanitizeEventName(String event) {
-        if (event == null) return "Notification";
+        if (event == null)
+            return "Notification";
         String cleaned = event.trim().replaceAll("[^a-zA-Z0-9_.-]", "_");
-        if (cleaned.contains("merchant_order")) return "MerchantOrder";
-        if (cleaned.contains("payment")) return "Payment";
-        if (cleaned.contains("order")) return "Order";
-        if (cleaned.contains("chargeback")) return "Chargeback";
+        if (cleaned.contains("merchant_order"))
+            return "MerchantOrder";
+        if (cleaned.contains("payment"))
+            return "Payment";
+        if (cleaned.contains("order"))
+            return "Order";
+        if (cleaned.contains("chargeback"))
+            return "Chargeback";
         return cleaned.replace('.', '_');
     }
 
@@ -191,7 +198,8 @@ public class MercadoPagoWebhookController {
                 var p = pedidoPagoRepository.findByMpOrderId(finalDataId)
                         .or(() -> pedidoPagoRepository.findByMpPaymentId(finalDataId))
                         .or(() -> pedidoPagoRepository.findByReferenciaPago(finalDataId));
-                if (p.isPresent() && p.get().getArenaId() != null) return p.get().getArenaId();
+                if (p.isPresent() && p.get().getArenaId() != null)
+                    return p.get().getArenaId();
             }
             if (rawBody != null && !rawBody.isBlank()) {
                 JsonNode root = objectMapper.readTree(rawBody);
@@ -200,10 +208,12 @@ public class MercadoPagoWebhookController {
                     var p = pedidoPagoRepository.findByMpOrderId(dataId)
                             .or(() -> pedidoPagoRepository.findByMpPaymentId(dataId))
                             .or(() -> pedidoPagoRepository.findByReferenciaPago(dataId));
-                    if (p.isPresent() && p.get().getArenaId() != null) return p.get().getArenaId();
+                    if (p.isPresent() && p.get().getArenaId() != null)
+                        return p.get().getArenaId();
                 }
             }
-        } catch (Exception ignored) {}
+        } catch (Exception ignored) {
+        }
         return "SYSTEM";
     }
 
@@ -213,7 +223,8 @@ public class MercadoPagoWebhookController {
                 var p = pedidoPagoRepository.findByMpOrderId(finalDataId)
                         .or(() -> pedidoPagoRepository.findByMpPaymentId(finalDataId))
                         .or(() -> pedidoPagoRepository.findByReferenciaPago(finalDataId));
-                if (p.isPresent() && p.get().getUsuarioId() != null) return p.get().getUsuarioId();
+                if (p.isPresent() && p.get().getUsuarioId() != null)
+                    return p.get().getUsuarioId();
             }
             if (rawBody != null && !rawBody.isBlank()) {
                 JsonNode root = objectMapper.readTree(rawBody);
@@ -222,10 +233,12 @@ public class MercadoPagoWebhookController {
                     var p = pedidoPagoRepository.findByMpOrderId(dataId)
                             .or(() -> pedidoPagoRepository.findByMpPaymentId(dataId))
                             .or(() -> pedidoPagoRepository.findByReferenciaPago(dataId));
-                    if (p.isPresent() && p.get().getUsuarioId() != null) return p.get().getUsuarioId();
+                    if (p.isPresent() && p.get().getUsuarioId() != null)
+                        return p.get().getUsuarioId();
                 }
             }
-        } catch (Exception ignored) {}
+        } catch (Exception ignored) {
+        }
         return 0L;
     }
 }

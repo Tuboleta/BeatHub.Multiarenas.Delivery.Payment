@@ -44,6 +44,28 @@ public class InitPaymentRequest {
     // Bandera para tokenizar y guardar la tarjeta para futuras compras (1-Click) tras la aprobación
     private Boolean guardarTarjeta = false;
 
+    // Bandera e identificación para campaña de 10% de descuento Clientes Davivienda
+    @JsonProperty("es_descuento_davivienda")
+    @JsonAlias({"esDescuentoDavivienda", "es_davivienda", "esDavivienda"})
+    private Boolean esDescuentoDavivienda = false;
+
+    @JsonProperty("cuenta")
+    @JsonAlias({"mp_account", "mpAccount"})
+    private String cuenta;
+
+    public boolean isDaviviendaPromo() {
+        if (Boolean.TRUE.equals(esDescuentoDavivienda)) return true;
+        if (cuenta != null && (cuenta.toLowerCase().contains("davi") || cuenta.toLowerCase().contains("10"))) {
+            return true;
+        }
+        if (extraParams != null) {
+            Object promo = extraParams.get("es_descuento_davivienda");
+            if (promo instanceof Boolean && (Boolean) promo) return true;
+            if (promo != null && ("true".equalsIgnoreCase(promo.toString()) || "1".equals(promo.toString()))) return true;
+        }
+        return false;
+    }
+
     // Token de enlace (bindingId) si el cliente paga con una tarjeta guardada
     private String bindingId;
 

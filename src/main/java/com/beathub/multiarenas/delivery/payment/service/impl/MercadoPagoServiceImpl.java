@@ -7,6 +7,7 @@ import com.beathub.multiarenas.delivery.payment.client.OrderingServiceClient;
 import com.beathub.multiarenas.delivery.payment.client.dto.UserClientResponse;
 import com.beathub.multiarenas.delivery.payment.client.dto.PedidoClientResponse;
 import com.beathub.multiarenas.delivery.payment.client.dto.mercadopago.*;
+import com.beathub.multiarenas.delivery.payment.config.MercadoPagoAccount;
 import com.beathub.multiarenas.delivery.payment.config.MercadoPagoProperties;
 import com.beathub.multiarenas.delivery.payment.dto.request.*;
 import com.beathub.multiarenas.delivery.payment.dto.response.*;
@@ -27,6 +28,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.LocalDateTime;
 import java.util.*;
 
@@ -59,6 +61,18 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
     @Override
     @Transactional
     public PaymentInitResponse initiateOrder(InitPaymentRequest request, String arenaId, Long usuarioId) {
+        MercadoPagoAccount mpAccount = (request.isDaviviendaPromo()
+                || "davivienda".equalsIgnoreCase(request.getCuenta()))
+                        ? MercadoPagoAccount.DAVIVIENDA_10
+                        : MercadoPagoAccount.STANDARD;
+
+        if (mpAccount.isDavivienda()) {
+            if (!mercadoPagoProperties.getDavivienda().isConfigured()) {
+                throw new PaymentException(
+                        "La subcuenta de Mercado Pago para clientes Davivienda no se encuentra configurada en el servidor.");
+            }
+        }
+
         String referenciaPago = "MP-ORD-" + System.currentTimeMillis() + "-"
                 + UUID.randomUUID().toString().substring(0, 6).toUpperCase();
 
@@ -110,7 +124,8 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
                 GrupoPago gp = grupoPagoUsuario.getGrupoPago();
                 if (gp != null && gp.getPedidoId() != null
                         && !request.getPedidoId().equals(gp.getPedidoId())) {
-                    boolean pedidoAsociado = grupoPagoPedidoRepository.existsByGrupoPagoIdAndPedidoId(gp.getId(), request.getPedidoId());
+                    boolean pedidoAsociado = grupoPagoPedidoRepository.existsByGrupoPagoIdAndPedidoId(gp.getId(),
+                            request.getPedidoId());
                     if (!pedidoAsociado) {
                         throw new PaymentException("La cuota de pago grupal no corresponde al pedido indicado.");
                     }
@@ -142,18 +157,56 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
                             : BigDecimal.ZERO;
                     BigDecimal saldoCuota = asignado.subtract(pagado);
                     if (saldoCuota.compareTo(BigDecimal.ZERO) <= 0) {
-                        if (gp != null && gp.getSaldoPendiente() != null && gp.getSaldoPendiente().compareTo(BigDecimal.ZERO) > 0) {
+                        if (gp != null && gp.getSaldoPendiente() != null
+                                && gp.getSaldoPendiente().compareTo(BigDecimal.ZERO) > 0) {
                             saldoCuota = gp.getSaldoPendiente();
                         } else {
                             throw new PaymentException("La cuota de pago grupal ya se encuentra saldada.");
                         }
                     }
-                    if (gp != null && gp.getSaldoPendiente() != null && saldoCuota.compareTo(gp.getSaldoPendiente()) > 0) {
+                    if (gp != null && gp.getSaldoPendiente() != null
+                            && saldoCuota.compareTo(gp.getSaldoPendiente()) > 0) {
                         saldoCuota = gp.getSaldoPendiente();
                     }
                     request.setMonto(saldoCuota);
                 }
             }
+        }
+
+        if (mpAccount.isDavivienda()) {
+            BigDecimal subtotalProductos = (pedidoInfo != null)
+                    ? calcularSubtotalProductos(pedidoInfo, request.getPedidoIds())
+                    : request.getMonto();
+
+            BigDecimal discountPct = mercadoPagoProperties.getDaviviendaDiscountPercentage();
+            BigDecimal discountFactor = discountPct.divide(BigDecimal.valueOf(100), 4, RoundingMode.HALF_UP);
+            BigDecimal discountAmount = subtotalProductos.multiply(discountFactor).setScale(2, RoundingMode.HALF_UP);
+
+            BigDecimal descuentoEnOrdering = (pedidoInfo != null && pedidoInfo.getDescuentoTotal() != null)
+                    ? pedidoInfo.getDescuentoTotal()
+                    : BigDecimal.ZERO;
+            if (pedidoInfo != null && pedidoInfo.getSubpedidos() != null) {
+                for (var s : pedidoInfo.getSubpedidos()) {
+                    if (s.getDescuentoTotal() != null) {
+                        descuentoEnOrdering = descuentoEnOrdering.add(s.getDescuentoTotal());
+                    }
+                }
+            }
+
+            BigDecimal chargeAmount;
+            if (descuentoEnOrdering.compareTo(BigDecimal.ZERO) > 0) {
+                // Ordering ya aplicó el descuento Davivienda al valorTotal del pedido
+                chargeAmount = request.getMonto();
+            } else {
+                // El pedido viene con valor bruto; aplicar el descuento promocional
+                chargeAmount = request.getMonto().subtract(discountAmount).setScale(2, RoundingMode.HALF_UP);
+            }
+
+            log.info(
+                    "[MercadoPago Davivienda {}%] Pedido #{}: Monto base={}, Subtotal productos={}, Descuento (solo productos)={}, Descuento en Ordering={}, Total a cobrar={}",
+                    discountPct, request.getPedidoId(), request.getMonto(), subtotalProductos, discountAmount,
+                    descuentoEnOrdering, chargeAmount);
+            request.setMonto(chargeAmount);
         }
 
         Map<String, Object> extraParams = request.getExtraParams() != null ? new HashMap<>(request.getExtraParams())
@@ -176,6 +229,7 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
                 .grupoPagoUsuario(grupoPagoUsuario)
                 .pasarelaId(PASARELA_MERCADOPAGO_ID)
                 .monto(request.getMonto())
+                .mpAccount(mpAccount.name())
                 .moneda(mercadoPagoProperties.getCurrency())
                 .referenciaPago(referenciaPago)
                 .jsonParams(jsonParamsStr)
@@ -509,6 +563,17 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
                 ? request.getMonto().setScale(0, java.math.RoundingMode.HALF_UP).toPlainString()
                 : request.getMonto().setScale(2, java.math.RoundingMode.HALF_UP).toPlainString();
 
+        // Factor de descuento para productos cuando aplica promoción Davivienda (no
+        // afecta servicios ni cargos)
+        BigDecimal discountFactor = BigDecimal.ONE;
+        if (mpAccount.isDavivienda()) {
+            BigDecimal discountPct = mercadoPagoProperties.getDaviviendaDiscountPercentage();
+            if (discountPct != null && discountPct.compareTo(BigDecimal.ZERO) > 0) {
+                discountFactor = BigDecimal.ONE
+                        .subtract(discountPct.divide(BigDecimal.valueOf(100), 4, RoundingMode.HALF_UP));
+            }
+        }
+
         if (esPagoGrupal) {
             String itemDescription = (request.getDescription() != null && !request.getDescription().isBlank())
                     ? request.getDescription()
@@ -523,18 +588,37 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
                     .unitPrice(formattedTotalAmount)
                     .build());
         } else if (request.getItems() != null && !request.getItems().isEmpty()) {
+            // Evaluar si los ítems de request ya vienen con descuento aplicado desde el
+            // cliente
+            BigDecimal sumItemsBrutos = BigDecimal.ZERO;
+            for (var it : request.getItems()) {
+                BigDecimal p = it.getUnitPrice() != null ? it.getUnitPrice() : BigDecimal.ZERO;
+                int q = it.getQuantity() != null && it.getQuantity() > 0 ? it.getQuantity() : 1;
+                sumItemsBrutos = sumItemsBrutos.add(p.multiply(BigDecimal.valueOf(q)));
+            }
+            boolean itemsYaTienenDescuento = mpAccount.isDavivienda()
+                    && sumItemsBrutos.compareTo(request.getMonto()) <= 0;
+
             for (int i = 0; i < request.getItems().size(); i++) {
                 var it = request.getItems().get(i);
                 BigDecimal unitPrice = it.getUnitPrice() != null ? it.getUnitPrice() : BigDecimal.ZERO;
-                String unitPriceStr = noDecimals
-                        ? unitPrice.setScale(0, java.math.RoundingMode.HALF_UP).toPlainString()
-                        : unitPrice.setScale(2, java.math.RoundingMode.HALF_UP).toPlainString();
-                String extCode = it.getExternalCode() != null && !it.getExternalCode().isBlank()
-                        ? it.getExternalCode()
-                        : "ITEM-" + (i + 1);
                 String catId = it.getCategoryId() != null && !it.getCategoryId().isBlank()
                         ? it.getCategoryId()
                         : "food_and_drink";
+                String extCode = it.getExternalCode() != null && !it.getExternalCode().isBlank()
+                        ? it.getExternalCode()
+                        : "ITEM-" + (i + 1);
+
+                // Aplicar descuento 10% únicamente a productos (excluyendo tarifas y servicios)
+                boolean esServicio = "services".equalsIgnoreCase(catId) || extCode.toUpperCase().startsWith("FEE");
+                if (mpAccount.isDavivienda() && !esServicio && !itemsYaTienenDescuento
+                        && discountFactor.compareTo(BigDecimal.ONE) < 0) {
+                    unitPrice = unitPrice.multiply(discountFactor);
+                }
+
+                String unitPriceStr = noDecimals
+                        ? unitPrice.setScale(0, java.math.RoundingMode.HALF_UP).toPlainString()
+                        : unitPrice.setScale(2, java.math.RoundingMode.HALF_UP).toPlainString();
 
                 mpItems.add(MpOrderRequest.Item.builder()
                         .externalCode(extCode)
@@ -562,6 +646,11 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
             }
             for (var it : allOrderItems) {
                 BigDecimal unitPrice = it.getPrecioUnitario() != null ? it.getPrecioUnitario() : BigDecimal.ZERO;
+                // Descuento Davivienda sobre productos detallados
+                if (mpAccount.isDavivienda() && discountFactor.compareTo(BigDecimal.ONE) < 0) {
+                    unitPrice = unitPrice.multiply(discountFactor);
+                }
+
                 String unitPriceStr = noDecimals
                         ? unitPrice.setScale(0, java.math.RoundingMode.HALF_UP).toPlainString()
                         : unitPrice.setScale(2, java.math.RoundingMode.HALF_UP).toPlainString();
@@ -579,6 +668,35 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
                         .categoryId(catId)
                         .quantity(it.getCantidad() != null && it.getCantidad() > 0 ? it.getCantidad() : 1)
                         .unitPrice(unitPriceStr)
+                        .build());
+            }
+        }
+
+        // Si el pedido tiene tarifa de servicio o cargos adicionales, incluirlos como
+        // ítem de servicio
+        if (pedidoInfo != null) {
+            BigDecimal totalCargoServicio = pedidoInfo.getCargoServicio() != null ? pedidoInfo.getCargoServicio()
+                    : BigDecimal.ZERO;
+            if (pedidoInfo.getSubpedidos() != null) {
+                for (var sub : pedidoInfo.getSubpedidos()) {
+                    if (sub.getCargoServicio() != null) {
+                        totalCargoServicio = totalCargoServicio.add(sub.getCargoServicio());
+                    }
+                }
+            }
+            boolean yaTieneServicio = mpItems.stream().anyMatch(it -> "services".equalsIgnoreCase(it.getCategoryId())
+                    || (it.getExternalCode() != null && it.getExternalCode().toUpperCase().startsWith("FEE")));
+            if (totalCargoServicio.compareTo(BigDecimal.ZERO) > 0 && !yaTieneServicio) {
+                String feeStr = noDecimals
+                        ? totalCargoServicio.setScale(0, java.math.RoundingMode.HALF_UP).toPlainString()
+                        : totalCargoServicio.setScale(2, java.math.RoundingMode.HALF_UP).toPlainString();
+                mpItems.add(MpOrderRequest.Item.builder()
+                        .externalCode("FEE-01")
+                        .title("Tarifa de servicio / Entrega")
+                        .description("Cargo por servicio y logística delivery")
+                        .categoryId("services")
+                        .quantity(1)
+                        .unitPrice(feeStr)
                         .build());
             }
         }
@@ -606,39 +724,83 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
             }
 
             BigDecimal diff = request.getMonto().subtract(totalItemsSum);
-            if (diff.compareTo(BigDecimal.ZERO) > 0) {
-                String diffStr = noDecimals
-                        ? diff.setScale(0, java.math.RoundingMode.HALF_UP).toPlainString()
-                        : diff.setScale(2, java.math.RoundingMode.HALF_UP).toPlainString();
-                mpItems.add(MpOrderRequest.Item.builder()
-                        .externalCode("FEE-01")
-                        .title("Tarifa de servicio / Entrega")
-                        .description("Cargo por servicio y logística delivery")
-                        .categoryId("services")
-                        .quantity(1)
-                        .unitPrice(diffStr)
-                        .build());
-            } else if (diff.compareTo(BigDecimal.ZERO) < 0) {
-                // Si la suma supera el monto a cobrar (descuento o cuota parcial),
-                // consolidar en un ítem único para evitar rechazo 400 de Mercado Pago
-                String itemDescription = (request.getDescription() != null && !request.getDescription().isBlank())
-                        ? request.getDescription()
-                        : "Consumo BeatHub Delivery #" + request.getPedidoId();
-                mpItems.clear();
-                mpItems.add(MpOrderRequest.Item.builder()
-                        .externalCode("ORD-" + request.getPedidoId())
-                        .title(itemDescription)
-                        .description(itemDescription)
-                        .categoryId("food_and_drink")
-                        .quantity(1)
-                        .unitPrice(formattedTotalAmount)
-                        .build());
+            if (diff.compareTo(BigDecimal.ZERO) != 0) {
+                boolean tieneItemServicio = mpItems.stream().anyMatch(it -> "services"
+                        .equalsIgnoreCase(it.getCategoryId())
+                        || (it.getExternalCode() != null && it.getExternalCode().toUpperCase().startsWith("FEE")));
+
+                if (diff.compareTo(BigDecimal.ZERO) > 0 && !tieneItemServicio) {
+                    String diffStr = noDecimals
+                            ? diff.setScale(0, java.math.RoundingMode.HALF_UP).toPlainString()
+                            : diff.setScale(2, java.math.RoundingMode.HALF_UP).toPlainString();
+                    mpItems.add(MpOrderRequest.Item.builder()
+                            .externalCode("FEE-01")
+                            .title("Tarifa de servicio / Entrega")
+                            .description("Cargo por servicio y logística delivery")
+                            .categoryId("services")
+                            .quantity(1)
+                            .unitPrice(diffStr)
+                            .build());
+                } else if (!mpItems.isEmpty()) {
+                    // Buscar un ítem con quantity == 1 (preferiblemente tarifa de servicio) para absorber la diferencia
+                    MpOrderRequest.Item itemToAdjust = null;
+                    for (var it : mpItems) {
+                        if (("services".equalsIgnoreCase(it.getCategoryId()) || (it.getExternalCode() != null && it.getExternalCode().toUpperCase().startsWith("FEE")))
+                                && it.getQuantity() == 1) {
+                            itemToAdjust = it;
+                            break;
+                        }
+                    }
+                    if (itemToAdjust == null) {
+                        for (var it : mpItems) {
+                            if (it.getQuantity() == 1) {
+                                itemToAdjust = it;
+                                break;
+                            }
+                        }
+                    }
+                    if (itemToAdjust == null) {
+                        itemToAdjust = mpItems.get(mpItems.size() - 1);
+                    }
+
+                    BigDecimal currentUnit = new BigDecimal(itemToAdjust.getUnitPrice());
+                    BigDecimal adjustedUnit = currentUnit.add(diff.divide(BigDecimal.valueOf(itemToAdjust.getQuantity()), noDecimals ? 0 : 2, RoundingMode.HALF_UP));
+                    if (adjustedUnit.compareTo(BigDecimal.ZERO) > 0) {
+                        String adjustedStr = noDecimals
+                                ? adjustedUnit.setScale(0, java.math.RoundingMode.HALF_UP).toPlainString()
+                                : adjustedUnit.setScale(2, java.math.RoundingMode.HALF_UP).toPlainString();
+                        itemToAdjust.setUnitPrice(adjustedStr);
+                    }
+                }
+            }
+
+            // Recalcular matemáticamente la suma final exacta de los ítems:
+            // Mercado Pago exige con rigor que total_amount == sum(items.unit_price * quantity)
+            BigDecimal finalItemsSum = BigDecimal.ZERO;
+            for (var it : mpItems) {
+                BigDecimal p = new BigDecimal(it.getUnitPrice());
+                BigDecimal q = BigDecimal.valueOf(it.getQuantity());
+                finalItemsSum = finalItemsSum.add(p.multiply(q));
+            }
+            formattedTotalAmount = noDecimals
+                    ? finalItemsSum.setScale(0, RoundingMode.HALF_UP).toPlainString()
+                    : finalItemsSum.setScale(2, RoundingMode.HALF_UP).toPlainString();
+
+            if (pedidoPago != null) {
+                pedidoPago.setMonto(new BigDecimal(formattedTotalAmount));
+                pedidoPagoRepository.save(pedidoPago);
             }
         }
 
         String statementDesc = (request.getStatementDescriptor() != null && !request.getStatementDescriptor().isBlank())
                 ? request.getStatementDescriptor().trim()
-                : resolveDefaultStatementDescriptor(arenaId);
+                : (mpAccount.isDavivienda()
+                        ? mercadoPagoProperties.resolveStatementDescriptor(mpAccount)
+                        : resolveDefaultStatementDescriptor(arenaId));
+
+        if (statementDesc == null || statementDesc.isBlank()) {
+            statementDesc = "BiteUp DAVI";
+        }
 
         if (statementDesc != null) {
             String lower = statementDesc.toLowerCase();
@@ -844,7 +1006,7 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
 
         // 5. Invocar POST /v1/orders en Mercado Pago (API Oficial Orders con Checkout
         // Pro)
-        MpOrderResponse mpResp = mercadoPagoClient.createOrder(orderReq, arenaId, usuarioId, null);
+        MpOrderResponse mpResp = mercadoPagoClient.createOrder(orderReq, arenaId, usuarioId, null, mpAccount);
 
         String checkoutUrl = mpResp.getCheckoutUrl() != null && !mpResp.getCheckoutUrl().isBlank()
                 ? mpResp.getCheckoutUrl()
@@ -937,7 +1099,8 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
             // Pro), consultar orden directamente
             if (pedidoPago.getMpOrderId() != null && !pedidoPago.getMpOrderId().isBlank()) {
                 try {
-                    MpOrderResponse mpOrder = mercadoPagoClient.getOrder(pedidoPago.getMpOrderId(), arenaId, usuarioId);
+                    MpOrderResponse mpOrder = mercadoPagoClient.getOrder(pedidoPago.getMpOrderId(), arenaId, usuarioId,
+                            pedidoPago.resolveMpAccount());
                     if (mpOrder != null) {
                         resolvedTerminal = mpOrder.resolveTerminalCode();
                         String status = mpOrder.getStatus();
@@ -988,7 +1151,7 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
             if (!sincronizado && pedidoPago.getMpPaymentId() != null && !pedidoPago.getMpPaymentId().isBlank()) {
                 try {
                     MpPaymentDetailResponse paymentDetail = mercadoPagoClient.getPayment(pedidoPago.getMpPaymentId(),
-                            arenaId, usuarioId);
+                            arenaId, usuarioId, pedidoPago.resolveMpAccount());
                     if (paymentDetail != null) {
                         pedidoPago.setActionCode(paymentDetail.getStatus());
                         pedidoPago.setActionCodeDescription(paymentDetail.getStatusDetail());
@@ -1086,7 +1249,8 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
         String referenciaPago = "MP-REC-" + System.currentTimeMillis() + "-"
                 + UUID.randomUUID().toString().substring(0, 6).toUpperCase();
 
-        // 1. Buscar la tarjeta tokenizada guardada (Aislamiento estricto por usuario - CRIT-05)
+        // 1. Buscar la tarjeta tokenizada guardada (Aislamiento estricto por usuario -
+        // CRIT-05)
         TarjetaClientePago tarjeta = null;
         if (request.getBindingId().matches("\\d+")) {
             Long cardId = Long.valueOf(request.getBindingId());
@@ -1103,7 +1267,8 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
         }
         if (tarjeta == null) {
             throw new PaymentException(
-                    "No se encontró la tarjeta asociada o no pertenece al usuario autenticado: " + request.getBindingId());
+                    "No se encontró la tarjeta asociada o no pertenece al usuario autenticado: "
+                            + request.getBindingId());
         }
 
         ClientePago cliente = tarjeta.getClientePago();
@@ -1126,16 +1291,19 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
                 ? grupoPagoUsuarioRepository.findById(request.getGrupoPagoUsuarioId()).orElse(null)
                 : null;
 
-        // BU-03 / CRIT-04: Validación estricta y sincronización del monto contra Ordering en payWithToken (Fail-Closed)
+        // BU-03 / CRIT-04: Validación estricta y sincronización del monto contra
+        // Ordering en payWithToken (Fail-Closed)
         if (request.getPedidoId() != null) {
             PedidoClientResponse pedidoInfo;
             try {
                 pedidoInfo = orderingClient.getPedido(request.getPedidoId(), null)
-                        .orElseThrow(() -> new PaymentException("Pedido #" + request.getPedidoId() + " no encontrado en el servicio de órdenes."));
+                        .orElseThrow(() -> new PaymentException(
+                                "Pedido #" + request.getPedidoId() + " no encontrado en el servicio de órdenes."));
             } catch (PaymentException pe) {
                 throw pe;
             } catch (Exception ex) {
-                log.error("[BU-03] Error consultando Ordering para pedido #{}: {}", request.getPedidoId(), ex.getMessage());
+                log.error("[BU-03] Error consultando Ordering para pedido #{}: {}", request.getPedidoId(),
+                        ex.getMessage());
                 throw new PaymentException("El servicio de órdenes no está disponible. No se puede iniciar el pago.");
             }
 
@@ -1149,7 +1317,8 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
                 }
                 BigDecimal valorTotalOficial = calcularValorTotalOficial(pedidoInfo, request.getPedidoIds());
                 if (request.getMonto() != null && request.getMonto().compareTo(valorTotalOficial) != 0) {
-                    log.warn("[BU-03] Monto manipulado por el cliente en MP payWithToken ({}). Reemplazado por oficial: {}",
+                    log.warn(
+                            "[BU-03] Monto manipulado por el cliente en MP payWithToken ({}). Reemplazado por oficial: {}",
                             request.getMonto(), valorTotalOficial);
                 }
                 request.setMonto(valorTotalOficial);
@@ -1160,7 +1329,8 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
                 GrupoPago gp = grupoPagoUsuario.getGrupoPago();
                 if (gp != null && gp.getPedidoId() != null
                         && !request.getPedidoId().equals(gp.getPedidoId())) {
-                    boolean pedidoAsociado = grupoPagoPedidoRepository.existsByGrupoPagoIdAndPedidoId(gp.getId(), request.getPedidoId());
+                    boolean pedidoAsociado = grupoPagoPedidoRepository.existsByGrupoPagoIdAndPedidoId(gp.getId(),
+                            request.getPedidoId());
                     if (!pedidoAsociado) {
                         throw new PaymentException("La cuota de pago grupal no corresponde al pedido indicado.");
                     }
@@ -1192,13 +1362,15 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
                             : BigDecimal.ZERO;
                     BigDecimal saldoCuota = asignado.subtract(pagado);
                     if (saldoCuota.compareTo(BigDecimal.ZERO) <= 0) {
-                        if (gp != null && gp.getSaldoPendiente() != null && gp.getSaldoPendiente().compareTo(BigDecimal.ZERO) > 0) {
+                        if (gp != null && gp.getSaldoPendiente() != null
+                                && gp.getSaldoPendiente().compareTo(BigDecimal.ZERO) > 0) {
                             saldoCuota = gp.getSaldoPendiente();
                         } else {
                             throw new PaymentException("La cuota de pago grupal ya se encuentra saldada.");
                         }
                     }
-                    if (gp != null && gp.getSaldoPendiente() != null && saldoCuota.compareTo(gp.getSaldoPendiente()) > 0) {
+                    if (gp != null && gp.getSaldoPendiente() != null
+                            && saldoCuota.compareTo(gp.getSaldoPendiente()) > 0) {
                         saldoCuota = gp.getSaldoPendiente();
                     }
                     request.setMonto(saldoCuota);
@@ -1215,6 +1387,7 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
                 .grupoPagoUsuario(grupoPagoUsuario)
                 .pasarelaId(PASARELA_MERCADOPAGO_ID)
                 .monto(request.getMonto())
+                .mpAccount(MercadoPagoAccount.STANDARD.name())
                 .moneda(mercadoPagoProperties.getCurrency())
                 .referenciaPago(referenciaPago)
                 .ipCliente(ipCliente)
@@ -1327,7 +1500,7 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
 
         BigDecimal montoReembolso = request.getMonto() != null ? request.getMonto() : pedidoPago.getMonto();
         mercadoPagoClient.refundOrder(pedidoPago.getMpOrderId(), pedidoPago.getMpPaymentId(), montoReembolso, arenaId,
-                usuarioId);
+                usuarioId, pedidoPago.resolveMpAccount());
 
         pedidoPago.setEstadoId(PedidoPago.ESTADO_REVERSADO); // 25: Reversado / Reembolsado (Flujo 5)
         pedidoPagoRepository.save(pedidoPago);
@@ -1481,14 +1654,41 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
         log.info("[MercadoPago Webhook] Recibido payload: {}, xSignature={}, xRequestId={}, dataId={}",
                 rawBody, xSignature, xRequestId, dataId);
 
-        // 1. Validar firma HMAC SHA-256 obligatoria si secret está configurado (ALTA-01)
-        String secret = mercadoPagoProperties.getWebhookSecret();
-        if (secret != null && !secret.isBlank()) {
+        // 1. Validar firma HMAC SHA-256 obligatoria si alguno de los secrets está
+        // configurado (ALTA-01)
+        String stdSecret = mercadoPagoProperties.getWebhookSecret();
+        String daviSecret = mercadoPagoProperties.resolveWebhookSecret(MercadoPagoAccount.DAVIVIENDA_10);
+        boolean hasSecret = (stdSecret != null && !stdSecret.isBlank())
+                || (daviSecret != null && !daviSecret.isBlank());
+
+        if (hasSecret) {
             if (xSignature == null || xSignature.isBlank() || xRequestId == null || xRequestId.isBlank()) {
-                log.error("[MercadoPago Webhook] Headers de firma ausentes (x-signature={}, x-request-id={})", xSignature, xRequestId);
+                log.error("[MercadoPago Webhook] Headers de firma ausentes (x-signature={}, x-request-id={})",
+                        xSignature, xRequestId);
                 throw new PaymentException("Headers de autenticación x-signature y x-request-id son obligatorios");
             }
-            validateWebhookSignature(secret, rawBody, xSignature, xRequestId, dataId);
+            boolean valid = false;
+            PaymentException lastEx = null;
+            if (stdSecret != null && !stdSecret.isBlank()) {
+                try {
+                    validateWebhookSignature(stdSecret, rawBody, xSignature, xRequestId, dataId);
+                    valid = true;
+                } catch (PaymentException pe) {
+                    lastEx = pe;
+                }
+            }
+            if (!valid && daviSecret != null && !daviSecret.isBlank()) {
+                try {
+                    validateWebhookSignature(daviSecret, rawBody, xSignature, xRequestId, dataId);
+                    valid = true;
+                } catch (PaymentException pe) {
+                    lastEx = pe;
+                }
+            }
+            if (!valid) {
+                throw lastEx != null ? lastEx
+                        : new PaymentException("Firma del webhook inválida para todas las cuentas configuradas");
+            }
         }
 
         // 2. Extraer ID de la orden o pago
@@ -1544,8 +1744,17 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
                     || orderId.matches("\\d+");
             if (isPaymentTopic) {
                 try {
-                    com.beathub.multiarenas.delivery.payment.client.dto.mercadopago.MpPaymentDetailResponse mpPayment = mercadoPagoClient
-                            .getPayment(orderId, null, null);
+                    com.beathub.multiarenas.delivery.payment.client.dto.mercadopago.MpPaymentDetailResponse mpPayment = null;
+                    try {
+                        mpPayment = mercadoPagoClient.getPayment(orderId, null, null, MercadoPagoAccount.STANDARD);
+                    } catch (Exception exStd) {
+                        if (mercadoPagoProperties.getDavivienda().isConfigured()) {
+                            mpPayment = mercadoPagoClient.getPayment(orderId, null, null,
+                                    MercadoPagoAccount.DAVIVIENDA_10);
+                        } else {
+                            throw exStd;
+                        }
+                    }
                     if (mpPayment != null && mpPayment.getExternalReference() != null) {
                         PedidoPago porRef = pedidoPagoRepository.findByReferenciaPago(mpPayment.getExternalReference())
                                 .orElse(null);
@@ -1569,7 +1778,16 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
             // B. Intentar consultar orden directamente ante MP para obtener
             // external_reference
             try {
-                MpOrderResponse mpOrder = mercadoPagoClient.getOrder(orderId, null, null);
+                MpOrderResponse mpOrder = null;
+                try {
+                    mpOrder = mercadoPagoClient.getOrder(orderId, null, null, MercadoPagoAccount.STANDARD);
+                } catch (Exception exStd) {
+                    if (mercadoPagoProperties.getDavivienda().isConfigured()) {
+                        mpOrder = mercadoPagoClient.getOrder(orderId, null, null, MercadoPagoAccount.DAVIVIENDA_10);
+                    } else {
+                        throw exStd;
+                    }
+                }
                 if (mpOrder != null && mpOrder.getExternalReference() != null) {
                     PedidoPago porRef = pedidoPagoRepository.findByReferenciaPago(mpOrder.getExternalReference())
                             .orElse(null);
@@ -1880,7 +2098,8 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
                 BigDecimal valorTotal = gp.getValorTotal() != null ? gp.getValorTotal() : BigDecimal.ZERO;
                 BigDecimal nuevoSaldo = valorTotal.subtract(nuevoTotalPagado).max(BigDecimal.ZERO);
 
-                // Tolerancia para centavos o pesos residuales por redondeo de cuotas (COP: <= $1.00)
+                // Tolerancia para centavos o pesos residuales por redondeo de cuotas (COP: <=
+                // $1.00)
                 BigDecimal TOLERANCIA_REDONDEO = new BigDecimal("1.00");
                 if (nuevoSaldo.compareTo(TOLERANCIA_REDONDEO) <= 0) {
                     nuevoSaldo = BigDecimal.ZERO;
@@ -2243,11 +2462,58 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
                             total = total.add(otro.getValorTotal());
                         }
                     } catch (Exception ex) {
-                        log.warn("[BU-03] No se pudo consultar el pedido hermano #{} para validar monto total: {}", otroPedidoId, ex.getMessage());
+                        log.warn("[BU-03] No se pudo consultar el pedido hermano #{} para validar monto total: {}",
+                                otroPedidoId, ex.getMessage());
                     }
                 }
             }
         }
         return total;
+    }
+
+    private BigDecimal calcularSubtotalProductos(PedidoClientResponse pedidoInfo, List<Long> pedidoIds) {
+        BigDecimal subtotal = BigDecimal.ZERO;
+        if (pedidoInfo.getItems() != null && !pedidoInfo.getItems().isEmpty()) {
+            for (var it : pedidoInfo.getItems()) {
+                if (it.getSubtotal() != null && it.getSubtotal().compareTo(BigDecimal.ZERO) > 0) {
+                    subtotal = subtotal.add(it.getSubtotal());
+                } else if (it.getPrecioUnitario() != null && it.getCantidad() != null) {
+                    subtotal = subtotal.add(it.getPrecioUnitario().multiply(BigDecimal.valueOf(it.getCantidad())));
+                }
+            }
+        }
+        if (pedidoInfo.getSubpedidos() != null && !pedidoInfo.getSubpedidos().isEmpty()) {
+            for (PedidoClientResponse sub : pedidoInfo.getSubpedidos()) {
+                if (sub.getItems() != null) {
+                    for (var it : sub.getItems()) {
+                        if (it.getSubtotal() != null && it.getSubtotal().compareTo(BigDecimal.ZERO) > 0) {
+                            subtotal = subtotal.add(it.getSubtotal());
+                        } else if (it.getPrecioUnitario() != null && it.getCantidad() != null) {
+                            subtotal = subtotal
+                                    .add(it.getPrecioUnitario().multiply(BigDecimal.valueOf(it.getCantidad())));
+                        }
+                    }
+                }
+            }
+        }
+
+        // Si no se pudo derivar de los items pero se conoce el cargo por servicio o
+        // tarifa adicional
+        if (subtotal.compareTo(BigDecimal.ZERO) <= 0) {
+            BigDecimal totalOficial = calcularValorTotalOficial(pedidoInfo, pedidoIds);
+            BigDecimal totalCargo = pedidoInfo.getCargoServicio() != null ? pedidoInfo.getCargoServicio()
+                    : BigDecimal.ZERO;
+            if (pedidoInfo.getSubpedidos() != null) {
+                for (var s : pedidoInfo.getSubpedidos()) {
+                    if (s.getCargoServicio() != null)
+                        totalCargo = totalCargo.add(s.getCargoServicio());
+                }
+            }
+            subtotal = totalOficial.subtract(totalCargo);
+            if (subtotal.compareTo(BigDecimal.ZERO) < 0) {
+                subtotal = totalOficial;
+            }
+        }
+        return subtotal;
     }
 }

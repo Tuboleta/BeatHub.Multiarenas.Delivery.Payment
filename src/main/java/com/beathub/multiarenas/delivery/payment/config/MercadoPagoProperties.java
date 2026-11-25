@@ -4,6 +4,8 @@ import lombok.Data;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.context.annotation.Configuration;
 
+import java.math.BigDecimal;
+
 @Data
 @Configuration
 @ConfigurationProperties(prefix = "mercadopago")
@@ -19,37 +21,73 @@ public class MercadoPagoProperties {
     private String statementDescriptor = "BiteUp DAVI";
     private boolean sandbox = false;
 
+    /**
+     * Subcuenta exclusiva para la campaña de clientes Davivienda con 10% de
+     * descuento
+     */
+    private DaviviendaAccountProperties davivienda = new DaviviendaAccountProperties();
+
     public boolean isSandbox() {
-        if (sandbox) return true;
+        if (sandbox)
+            return true;
         return accessToken != null && accessToken.startsWith("TEST-");
     }
 
-    public String getBaseUrl() { return baseUrl; }
-    public void setBaseUrl(String baseUrl) { this.baseUrl = baseUrl; }
+    public String resolveAccessToken(MercadoPagoAccount account) {
+        if (account == MercadoPagoAccount.DAVIVIENDA_10 && davivienda != null && davivienda.isConfigured()) {
+            return davivienda.getAccessToken();
+        }
+        return accessToken;
+    }
 
-    public String getAccessToken() { return accessToken; }
-    public void setAccessToken(String accessToken) { this.accessToken = accessToken; }
+    public String resolvePublicKey(MercadoPagoAccount account) {
+        if (account == MercadoPagoAccount.DAVIVIENDA_10 && davivienda != null && davivienda.getPublicKey() != null
+                && !davivienda.getPublicKey().isBlank()) {
+            return davivienda.getPublicKey();
+        }
+        return publicKey;
+    }
 
-    public String getPublicKey() { return publicKey; }
-    public void setPublicKey(String publicKey) { this.publicKey = publicKey; }
+    public String resolveWebhookSecret(MercadoPagoAccount account) {
+        if (account == MercadoPagoAccount.DAVIVIENDA_10 && davivienda != null && davivienda.getWebhookSecret() != null
+                && !davivienda.getWebhookSecret().isBlank()) {
+            return davivienda.getWebhookSecret();
+        }
+        return webhookSecret;
+    }
 
-    public String getWebhookSecret() { return webhookSecret; }
-    public void setWebhookSecret(String webhookSecret) { this.webhookSecret = webhookSecret; }
+    public String resolveStatementDescriptor(MercadoPagoAccount account) {
+        if (account == MercadoPagoAccount.DAVIVIENDA_10 && davivienda != null
+                && davivienda.getStatementDescriptor() != null && !davivienda.getStatementDescriptor().isBlank()) {
+            return davivienda.getStatementDescriptor();
+        }
+        return statementDescriptor != null && !statementDescriptor.isBlank() ? statementDescriptor : "BiteUp DAVI";
+    }
 
-    public String getCurrency() { return currency; }
-    public void setCurrency(String currency) { this.currency = currency; }
+    public BigDecimal getDaviviendaDiscountPercentage() {
+        if (davivienda != null && davivienda.getDiscountPercentage() != null) {
+            return davivienda.getDiscountPercentage();
+        }
+        return BigDecimal.valueOf(10.00);
+    }
 
-    public String getDefaultReturnUrl() { return defaultReturnUrl; }
-    public void setDefaultReturnUrl(String defaultReturnUrl) { this.defaultReturnUrl = defaultReturnUrl; }
+    @Data
+    public static class DaviviendaAccountProperties {
+        private String accessToken;
+        private String publicKey;
+        private String webhookSecret;
+        private String statementDescriptor = "BiteUp DAVI";
+        private BigDecimal discountPercentage = BigDecimal.valueOf(10.00);
+        private boolean sandbox = false;
 
-    public String getDefaultFailUrl() { return defaultFailUrl; }
-    public void setDefaultFailUrl(String defaultFailUrl) { this.defaultFailUrl = defaultFailUrl; }
+        public boolean isConfigured() {
+            return accessToken != null && !accessToken.isBlank();
+        }
 
-    public String getPublicWebhookUrl() { return publicWebhookUrl; }
-    public void setPublicWebhookUrl(String publicWebhookUrl) { this.publicWebhookUrl = publicWebhookUrl; }
-
-    public String getStatementDescriptor() { return statementDescriptor; }
-    public void setStatementDescriptor(String statementDescriptor) { this.statementDescriptor = statementDescriptor; }
-
-    public void setSandbox(boolean sandbox) { this.sandbox = sandbox; }
+        public boolean isSandbox() {
+            if (sandbox)
+                return true;
+            return accessToken != null && accessToken.startsWith("TEST-");
+        }
+    }
 }

@@ -22,6 +22,8 @@ public class PedidoClientResponse {
     private String grupoPedidoId;
     private BigDecimal valorTotal;
     private Integer estadoId;
+    private BigDecimal cargoServicio;
+    private BigDecimal descuentoTotal;
 
     // Datos del cliente desde el pedido
     private String clienteNombre;

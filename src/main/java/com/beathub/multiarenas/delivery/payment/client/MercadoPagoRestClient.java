@@ -1,6 +1,7 @@
 package com.beathub.multiarenas.delivery.payment.client;
 
 import com.beathub.multiarenas.delivery.payment.client.dto.mercadopago.*;
+import com.beathub.multiarenas.delivery.payment.config.MercadoPagoAccount;
 import com.beathub.multiarenas.delivery.payment.config.MercadoPagoProperties;
 import com.beathub.multiarenas.delivery.payment.exception.MercadoPagoApiException;
 import com.beathub.multiarenas.delivery.payment.service.IntegrationAuditService;
@@ -34,9 +35,13 @@ public class MercadoPagoRestClient {
     private static final int SERVICIO_MERCADOPAGO_ID = 1;
 
     private String getSanitizedToken() {
-        String token = properties.getAccessToken();
+        return getSanitizedToken(MercadoPagoAccount.STANDARD);
+    }
+
+    private String getSanitizedToken(MercadoPagoAccount account) {
+        String token = properties.resolveAccessToken(account != null ? account : MercadoPagoAccount.STANDARD);
         if (token == null || token.isBlank()) {
-            throw new MercadoPagoApiException("TOKEN_MISSING", "Mercado Pago Access Token no configurado");
+            throw new MercadoPagoApiException("TOKEN_MISSING", "Mercado Pago Access Token no configurado para la cuenta: " + account);
         }
         return token.replace("Bearer ", "").trim();
     }
@@ -117,6 +122,10 @@ public class MercadoPagoRestClient {
      * Consultar detalle de Pago en Mercado Pago (GET /v1/payments/{paymentId})
      */
     public MpPaymentDetailResponse getPayment(String paymentId, String arenaId, Long usuarioId) {
+        return getPayment(paymentId, arenaId, usuarioId, MercadoPagoAccount.STANDARD);
+    }
+
+    public MpPaymentDetailResponse getPayment(String paymentId, String arenaId, Long usuarioId, MercadoPagoAccount account) {
         String targetUrl = properties.getBaseUrl() + "/v1/payments/" + paymentId;
         LocalDateTime startTime = LocalDateTime.now();
 
@@ -124,7 +133,7 @@ public class MercadoPagoRestClient {
             RestClient client = restClientBuilder.build();
             String responseBody = client.get()
                     .uri(targetUrl)
-                    .header(HttpHeaders.AUTHORIZATION, "Bearer " + getSanitizedToken())
+                    .header(HttpHeaders.AUTHORIZATION, "Bearer " + getSanitizedToken(account))
                     .retrieve()
                     .body(String.class);
 
@@ -166,6 +175,10 @@ public class MercadoPagoRestClient {
      * Buscar Pagos por Referencia Externa (GET /v1/payments/search?external_reference={externalReference})
      */
     public List<MpPaymentDetailResponse> searchPaymentByExternalReference(String externalReference, String arenaId, Long usuarioId) {
+        return searchPaymentByExternalReference(externalReference, arenaId, usuarioId, MercadoPagoAccount.STANDARD);
+    }
+
+    public List<MpPaymentDetailResponse> searchPaymentByExternalReference(String externalReference, String arenaId, Long usuarioId, MercadoPagoAccount account) {
         String targetUrl = properties.getBaseUrl() + "/v1/payments/search?external_reference=" + externalReference;
         LocalDateTime startTime = LocalDateTime.now();
 
@@ -173,7 +186,7 @@ public class MercadoPagoRestClient {
             RestClient client = restClientBuilder.build();
             String responseBody = client.get()
                     .uri(targetUrl)
-                    .header(HttpHeaders.AUTHORIZATION, "Bearer " + getSanitizedToken())
+                    .header(HttpHeaders.AUTHORIZATION, "Bearer " + getSanitizedToken(account))
                     .retrieve()
                     .body(String.class);
 
@@ -216,6 +229,10 @@ public class MercadoPagoRestClient {
      * 1. Crear Orden con la moderna API de Orders de Mercado Pago (POST /v1/orders)
      */
     public MpOrderResponse createOrder(MpOrderRequest request, String arenaId, Long usuarioId, String idempotencyKey) {
+        return createOrder(request, arenaId, usuarioId, idempotencyKey, MercadoPagoAccount.STANDARD);
+    }
+
+    public MpOrderResponse createOrder(MpOrderRequest request, String arenaId, Long usuarioId, String idempotencyKey, MercadoPagoAccount account) {
         String targetUrl = properties.getBaseUrl() + "/v1/orders";
         LocalDateTime startTime = LocalDateTime.now();
         String idempotency = (idempotencyKey != null && !idempotencyKey.isBlank())
@@ -227,13 +244,14 @@ public class MercadoPagoRestClient {
             requestJson = objectMapper.writeValueAsString(request);
         } catch (Exception ignored) {}
 
-        log.info("[MercadoPagoRestClient] Creando orden (v1/orders) para ref={}: {}", request.getExternalReference(), requestJson);
+        log.info("[MercadoPagoRestClient] Creando orden (v1/orders) para ref={} [cuenta={}]: {}",
+                request.getExternalReference(), account, requestJson);
 
         try {
             RestClient client = restClientBuilder.build();
             String responseBody = client.post()
                     .uri(targetUrl)
-                    .header(HttpHeaders.AUTHORIZATION, "Bearer " + getSanitizedToken())
+                    .header(HttpHeaders.AUTHORIZATION, "Bearer " + getSanitizedToken(account))
                     .header("X-Idempotency-Key", idempotency)
                     .contentType(MediaType.APPLICATION_JSON)
                     .body(requestJson)
@@ -291,6 +309,10 @@ public class MercadoPagoRestClient {
      * 2. Consultar Orden por ID (GET /v1/orders/{orderId})
      */
     public MpOrderResponse getOrder(String orderId, String arenaId, Long usuarioId) {
+        return getOrder(orderId, arenaId, usuarioId, MercadoPagoAccount.STANDARD);
+    }
+
+    public MpOrderResponse getOrder(String orderId, String arenaId, Long usuarioId, MercadoPagoAccount account) {
         String targetUrl = properties.getBaseUrl() + "/v1/orders/" + orderId;
         LocalDateTime startTime = LocalDateTime.now();
 
@@ -298,7 +320,7 @@ public class MercadoPagoRestClient {
             RestClient client = restClientBuilder.build();
             String responseBody = client.get()
                     .uri(targetUrl)
-                    .header(HttpHeaders.AUTHORIZATION, "Bearer " + getSanitizedToken())
+                    .header(HttpHeaders.AUTHORIZATION, "Bearer " + getSanitizedToken(account))
                     .retrieve()
                     .body(String.class);
 
@@ -341,6 +363,10 @@ public class MercadoPagoRestClient {
      * 3. Reembolso total o parcial de Orden (POST /v1/orders/{orderId}/refund)
      */
     public String refundOrder(String orderId, String paymentId, BigDecimal amount, String arenaId, Long usuarioId) {
+        return refundOrder(orderId, paymentId, amount, arenaId, usuarioId, MercadoPagoAccount.STANDARD);
+    }
+
+    public String refundOrder(String orderId, String paymentId, BigDecimal amount, String arenaId, Long usuarioId, MercadoPagoAccount account) {
         String targetUrl = properties.getBaseUrl() + "/v1/orders/" + orderId + "/refund";
         LocalDateTime startTime = LocalDateTime.now();
 
@@ -366,7 +392,7 @@ public class MercadoPagoRestClient {
             RestClient client = restClientBuilder.build();
             String responseBody = client.post()
                     .uri(targetUrl)
-                    .header(HttpHeaders.AUTHORIZATION, "Bearer " + getSanitizedToken())
+                    .header(HttpHeaders.AUTHORIZATION, "Bearer " + getSanitizedToken(account))
                     .header("X-Idempotency-Key", UUID.randomUUID().toString())
                     .contentType(MediaType.APPLICATION_JSON)
                     .body(reqJson)

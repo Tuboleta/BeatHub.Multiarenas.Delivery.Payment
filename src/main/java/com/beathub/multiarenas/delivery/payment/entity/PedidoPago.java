@@ -39,6 +39,9 @@ public class PedidoPago {
     @Column(name = "mp_payment_id", length = 100)
     private String mpPaymentId;
 
+    @Column(name = "mp_account", length = 50)
+    private String mpAccount; // STANDARD o DAVIVIENDA_10
+
     @Column(name = "init_point", columnDefinition = "TEXT")
     private String initPoint;
 
@@ -134,5 +137,9 @@ public class PedidoPago {
     @PreUpdate
     protected void onUpdate() {
         actualizacionFecha = LocalDateTime.now();
+    }
+
+    public com.beathub.multiarenas.delivery.payment.config.MercadoPagoAccount resolveMpAccount() {
+        return com.beathub.multiarenas.delivery.payment.config.MercadoPagoAccount.fromString(this.mpAccount);
     }
 }

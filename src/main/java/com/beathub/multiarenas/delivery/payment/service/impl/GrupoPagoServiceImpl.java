@@ -386,6 +386,50 @@ public class GrupoPagoServiceImpl implements GrupoPagoService {
                     }
                 }
             }
+
+            // Evaluar si la suma de pagos aprobados ya cubre la totalidad del pedido (tolerancia por redondeo COP: <= $1.00)
+            List<PedidoPago> pagosActualizados = new ArrayList<>(
+                    pedidoPagoRepository.findByGrupoPagoUsuario_GrupoPago_Id(grupoPago.getId()));
+            if (grupoPago.getPedidoId() != null) {
+                List<PedidoPago> pagosPedido = pedidoPagoRepository.findByPedidoId(grupoPago.getPedidoId());
+                for (PedidoPago pp : pagosPedido) {
+                    if (pagosActualizados.stream().noneMatch(p -> p.getId().equals(pp.getId()))) {
+                        pagosActualizados.add(pp);
+                    }
+                }
+            }
+
+            BigDecimal totalAprobado = pagosActualizados.stream()
+                    .filter(p -> p.getEstadoId() != null && p.getEstadoId() == PedidoPago.ESTADO_APROBADO)
+                    .map(PedidoPago::getMonto)
+                    .filter(Objects::nonNull)
+                    .reduce(BigDecimal.ZERO, BigDecimal::add);
+
+            BigDecimal valorTotal = grupoPago.getValorTotal() != null ? grupoPago.getValorTotal() : BigDecimal.ZERO;
+            BigDecimal saldoCalculado = valorTotal.subtract(totalAprobado).max(BigDecimal.ZERO);
+
+            BigDecimal TOLERANCIA_REDONDEO = new BigDecimal("1.00");
+            if (saldoCalculado.compareTo(TOLERANCIA_REDONDEO) <= 0 && totalAprobado.compareTo(BigDecimal.ZERO) > 0) {
+                if (grupoPago.getEstadoId() == null || grupoPago.getEstadoId() != 2) {
+                    log.info("[GrupoPago] Sincronización detectó vaca {} completamente pagada (Total: {}, Aprobado: {}). Actualizando a COMPLETADO.",
+                            grupoPago.getCodigoUnico(), valorTotal, totalAprobado);
+                    grupoPago.setTotalPagado(totalAprobado);
+                    grupoPago.setSaldoPendiente(BigDecimal.ZERO);
+                    grupoPago.setEstadoId(2); // 2: Completado
+                    grupoPagoRepository.save(grupoPago);
+
+                    if (grupoPago.getPedidoId() != null) {
+                        try {
+                            orderingClient.updateOrderStatus(grupoPago.getPedidoId(), 2,
+                                    "Pago grupal 100% completado (Sincronizado)", null,
+                                    grupoPago.getCodigoUnico(), null, grupoPago.getValorTotal(), "Vaca");
+                        } catch (Exception ex) {
+                            log.error("[GrupoPago] Error notificando a Ordering tras completar vaca {}: {}",
+                                    grupoPago.getCodigoUnico(), ex.getMessage());
+                        }
+                    }
+                }
+            }
         } catch (Exception ex) {
             log.warn("[GrupoPago] Error al intentar sincronizar pagos pendientes del grupo {}: {}",
                     grupoPago.getId(), ex.getMessage());
@@ -683,6 +727,14 @@ public class GrupoPagoServiceImpl implements GrupoPagoService {
             if (grupoPago.getSaldoPendiente() != null && montoAPagar.compareTo(grupoPago.getSaldoPendiente()) > 0) {
                 montoAPagar = grupoPago.getSaldoPendiente();
                 log.info("El monto solicitado excede el saldo pendiente. Ajustado al saldo pendiente: {}", montoAPagar);
+            }
+
+            // Si la diferencia restante en la vaca respecto al monto a pagar es de centavos residuales (<= $1.00 COP),
+            // ajustar el monto a pagar exactamente al saldo pendiente de la vaca para liquidarla sin residuos
+            if (grupoPago.getSaldoPendiente() != null
+                    && grupoPago.getSaldoPendiente().compareTo(montoAPagar) > 0
+                    && grupoPago.getSaldoPendiente().subtract(montoAPagar).compareTo(new BigDecimal("1.00")) <= 0) {
+                montoAPagar = grupoPago.getSaldoPendiente();
             }
         }
 

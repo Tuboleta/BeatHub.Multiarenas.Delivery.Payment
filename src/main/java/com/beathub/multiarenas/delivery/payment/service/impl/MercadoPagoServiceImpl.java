@@ -1879,6 +1879,12 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
 
                 BigDecimal valorTotal = gp.getValorTotal() != null ? gp.getValorTotal() : BigDecimal.ZERO;
                 BigDecimal nuevoSaldo = valorTotal.subtract(nuevoTotalPagado).max(BigDecimal.ZERO);
+
+                // Tolerancia para centavos o pesos residuales por redondeo de cuotas (COP: <= $1.00)
+                BigDecimal TOLERANCIA_REDONDEO = new BigDecimal("1.00");
+                if (nuevoSaldo.compareTo(TOLERANCIA_REDONDEO) <= 0) {
+                    nuevoSaldo = BigDecimal.ZERO;
+                }
                 gp.setSaldoPendiente(nuevoSaldo);
 
                 if (nuevoSaldo.compareTo(BigDecimal.ZERO) <= 0) {

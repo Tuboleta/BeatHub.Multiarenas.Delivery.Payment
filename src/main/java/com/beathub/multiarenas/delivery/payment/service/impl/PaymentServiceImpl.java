@@ -134,7 +134,8 @@ public class PaymentServiceImpl implements PaymentService {
                 GrupoPago gp = grupoPagoUsuario.getGrupoPago();
                 if (gp != null && gp.getPedidoId() != null
                         && !request.getPedidoId().equals(gp.getPedidoId())) {
-                    boolean pedidoAsociado = grupoPagoPedidoRepository.existsByGrupoPagoIdAndPedidoId(gp.getId(), request.getPedidoId());
+                    boolean pedidoAsociado = grupoPagoPedidoRepository.existsByGrupoPagoIdAndPedidoId(gp.getId(),
+                            request.getPedidoId());
                     if (!pedidoAsociado) {
                         throw new PaymentException("La cuota de pago grupal no corresponde al pedido indicado.");
                     }
@@ -165,13 +166,15 @@ public class PaymentServiceImpl implements PaymentService {
                             : BigDecimal.ZERO;
                     BigDecimal saldoCuota = asignado.subtract(pagado);
                     if (saldoCuota.compareTo(BigDecimal.ZERO) <= 0) {
-                        if (gp != null && gp.getSaldoPendiente() != null && gp.getSaldoPendiente().compareTo(BigDecimal.ZERO) > 0) {
+                        if (gp != null && gp.getSaldoPendiente() != null
+                                && gp.getSaldoPendiente().compareTo(BigDecimal.ZERO) > 0) {
                             saldoCuota = gp.getSaldoPendiente();
                         } else {
                             throw new PaymentException("La cuota de pago grupal ya se encuentra saldada.");
                         }
                     }
-                    if (gp != null && gp.getSaldoPendiente() != null && saldoCuota.compareTo(gp.getSaldoPendiente()) > 0) {
+                    if (gp != null && gp.getSaldoPendiente() != null
+                            && saldoCuota.compareTo(gp.getSaldoPendiente()) > 0) {
                         saldoCuota = gp.getSaldoPendiente();
                     }
                     request.setMonto(saldoCuota);
@@ -622,6 +625,12 @@ public class PaymentServiceImpl implements PaymentService {
 
                 BigDecimal valorTotal = gp.getValorTotal() != null ? gp.getValorTotal() : BigDecimal.ZERO;
                 BigDecimal nuevoSaldo = valorTotal.subtract(nuevoTotalPagado).max(BigDecimal.ZERO);
+
+                // Tolerancia para centavos o pesos residuales por redondeo de cuotas (COP: <= $1.00)
+                BigDecimal TOLERANCIA_REDONDEO = new BigDecimal("1.00");
+                if (nuevoSaldo.compareTo(TOLERANCIA_REDONDEO) <= 0) {
+                    nuevoSaldo = BigDecimal.ZERO;
+                }
                 gp.setSaldoPendiente(nuevoSaldo);
 
                 if (nuevoSaldo.compareTo(BigDecimal.ZERO) <= 0) {
@@ -915,7 +924,8 @@ public class PaymentServiceImpl implements PaymentService {
                 GrupoPago gp = grupoPagoUsuario.getGrupoPago();
                 if (gp != null && gp.getPedidoId() != null
                         && !request.getPedidoId().equals(gp.getPedidoId())) {
-                    boolean pedidoAsociado = grupoPagoPedidoRepository.existsByGrupoPagoIdAndPedidoId(gp.getId(), request.getPedidoId());
+                    boolean pedidoAsociado = grupoPagoPedidoRepository.existsByGrupoPagoIdAndPedidoId(gp.getId(),
+                            request.getPedidoId());
                     if (!pedidoAsociado) {
                         throw new PaymentException("La cuota de pago grupal no corresponde al pedido indicado.");
                     }
@@ -946,13 +956,15 @@ public class PaymentServiceImpl implements PaymentService {
                             : BigDecimal.ZERO;
                     BigDecimal saldoCuota = asignado.subtract(pagado);
                     if (saldoCuota.compareTo(BigDecimal.ZERO) <= 0) {
-                        if (gp != null && gp.getSaldoPendiente() != null && gp.getSaldoPendiente().compareTo(BigDecimal.ZERO) > 0) {
+                        if (gp != null && gp.getSaldoPendiente() != null
+                                && gp.getSaldoPendiente().compareTo(BigDecimal.ZERO) > 0) {
                             saldoCuota = gp.getSaldoPendiente();
                         } else {
                             throw new PaymentException("La cuota de pago grupal ya se encuentra saldada.");
                         }
                     }
-                    if (gp != null && gp.getSaldoPendiente() != null && saldoCuota.compareTo(gp.getSaldoPendiente()) > 0) {
+                    if (gp != null && gp.getSaldoPendiente() != null
+                            && saldoCuota.compareTo(gp.getSaldoPendiente()) > 0) {
                         saldoCuota = gp.getSaldoPendiente();
                     }
                     request.setMonto(saldoCuota);
@@ -1851,10 +1863,12 @@ public class PaymentServiceImpl implements PaymentService {
         return 1L;
     }
 
-    private BigDecimal calcularValorTotalOficial(com.beathub.multiarenas.delivery.payment.client.dto.PedidoClientResponse pedido, List<Long> pedidoIds) {
+    private BigDecimal calcularValorTotalOficial(
+            com.beathub.multiarenas.delivery.payment.client.dto.PedidoClientResponse pedido, List<Long> pedidoIds) {
         BigDecimal total = pedido.getValorTotal() != null ? pedido.getValorTotal() : BigDecimal.ZERO;
         if (pedido.getSubpedidos() != null && !pedido.getSubpedidos().isEmpty()) {
-            for (com.beathub.multiarenas.delivery.payment.client.dto.PedidoClientResponse sub : pedido.getSubpedidos()) {
+            for (com.beathub.multiarenas.delivery.payment.client.dto.PedidoClientResponse sub : pedido
+                    .getSubpedidos()) {
                 if (sub.getValorTotal() != null && sub.getValorTotal().compareTo(BigDecimal.ZERO) > 0) {
                     total = total.add(sub.getValorTotal());
                 }
@@ -1863,14 +1877,16 @@ public class PaymentServiceImpl implements PaymentService {
             for (Long otroPedidoId : pedidoIds) {
                 if (otroPedidoId != null && !otroPedidoId.equals(pedido.getId())) {
                     try {
-                        com.beathub.multiarenas.delivery.payment.client.dto.PedidoClientResponse otro = orderingClient.getPedido(otroPedidoId, null).orElse(null);
+                        com.beathub.multiarenas.delivery.payment.client.dto.PedidoClientResponse otro = orderingClient
+                                .getPedido(otroPedidoId, null).orElse(null);
                         if (otro != null && otro.getValorTotal() != null
                                 && Objects.equals(otro.getUsuarioId(), pedido.getUsuarioId())
                                 && otro.getValorTotal().compareTo(BigDecimal.ZERO) > 0) {
                             total = total.add(otro.getValorTotal());
                         }
                     } catch (Exception ex) {
-                        log.warn("[BU-03] No se pudo consultar el pedido hermano #{} para validar monto total: {}", otroPedidoId, ex.getMessage());
+                        log.warn("[BU-03] No se pudo consultar el pedido hermano #{} para validar monto total: {}",
+                                otroPedidoId, ex.getMessage());
                     }
                 }
             }

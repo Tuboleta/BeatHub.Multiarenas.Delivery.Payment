@@ -19,6 +19,9 @@ public class PayWithTokenRequest {
     @NotNull(message = "El pedidoId es obligatorio")
     private Long pedidoId;
 
+    private String grupoPedidoId;
+    private java.util.List<Long> pedidoIds;
+
     @NotNull(message = "El monto es obligatorio")
     @Positive(message = "El monto debe ser mayor a cero")
     private BigDecimal monto;

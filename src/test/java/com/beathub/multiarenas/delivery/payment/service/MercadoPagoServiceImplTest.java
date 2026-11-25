@@ -51,6 +51,9 @@ class MercadoPagoServiceImplTest {
         private GrupoPagoRepository grupoPagoRepository;
 
         @Mock
+        private com.beathub.multiarenas.delivery.payment.repository.GrupoPagoPedidoRepository grupoPagoPedidoRepository;
+
+        @Mock
         private ClientePagoRepository clientePagoRepository;
 
         @Mock

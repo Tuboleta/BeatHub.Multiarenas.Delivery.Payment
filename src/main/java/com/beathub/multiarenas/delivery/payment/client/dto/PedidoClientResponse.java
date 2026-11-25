@@ -32,6 +32,9 @@ public class PedidoClientResponse {
     // Ítems del pedido desde Ordering
     private List<CarritoItemClientResponse> items;
 
+    // Subpedidos en órdenes multi-tienda agrupadas
+    private List<PedidoClientResponse> subpedidos;
+
     @Data
     @Builder
     @NoArgsConstructor

@@ -40,6 +40,7 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
     private final MedioPagoRepository medioPagoRepository;
     private final GrupoPagoUsuarioRepository grupoPagoUsuarioRepository;
     private final GrupoPagoRepository grupoPagoRepository;
+    private final com.beathub.multiarenas.delivery.payment.repository.GrupoPagoPedidoRepository grupoPagoPedidoRepository;
     private final ClientePagoRepository clientePagoRepository;
     private final TarjetaClientePagoRepository tarjetaClientePagoRepository;
     private final MercadoPagoRestClient mercadoPagoClient;
@@ -105,26 +106,52 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
                 if (grupoPagoUsuario == null) {
                     throw new PaymentException("La cuota de pago grupal especificada no existe.");
                 }
-                if (grupoPagoUsuario.getGrupoPago() != null
-                        && !request.getPedidoId().equals(grupoPagoUsuario.getGrupoPago().getPedidoId())) {
-                    throw new PaymentException("La cuota de pago grupal no corresponde al pedido indicado.");
+                GrupoPago gp = grupoPagoUsuario.getGrupoPago();
+                if (gp != null && gp.getPedidoId() != null
+                        && !request.getPedidoId().equals(gp.getPedidoId())) {
+                    boolean pedidoAsociado = grupoPagoPedidoRepository.existsByGrupoPagoIdAndPedidoId(gp.getId(), request.getPedidoId());
+                    if (!pedidoAsociado) {
+                        throw new PaymentException("La cuota de pago grupal no corresponde al pedido indicado.");
+                    }
                 }
                 if (grupoPagoUsuario.getUsuarioId() != null
                         && !grupoPagoUsuario.getUsuarioId().equals(0L)
                         && !grupoPagoUsuario.getUsuarioId().equals(usuarioId)) {
                     throw new PaymentException("La cuota de pago grupal no pertenece al usuario autenticado");
                 }
-                BigDecimal asignado = grupoPagoUsuario.getMontoAsignado() != null
-                        ? grupoPagoUsuario.getMontoAsignado()
-                        : pedidoInfo.getValorTotal();
-                BigDecimal pagado = grupoPagoUsuario.getMontoPagado() != null
-                        ? grupoPagoUsuario.getMontoPagado()
-                        : BigDecimal.ZERO;
-                BigDecimal saldoCuota = asignado.subtract(pagado);
-                if (saldoCuota.compareTo(BigDecimal.ZERO) <= 0) {
-                    throw new PaymentException("La cuota de pago grupal ya se encuentra saldada.");
+
+                boolean esLibre = gp != null && "LIBRE_PAGO".equalsIgnoreCase(gp.getModalidadDivision());
+
+                if (esLibre || grupoPagoUsuario.getMontoAsignado() == null) {
+                    // Modalidad LIBRE APORTE: Respetar el monto que el usuario ingresó
+                    if (request.getMonto() == null || request.getMonto().compareTo(BigDecimal.ZERO) <= 0) {
+                        throw new PaymentException("Debe ingresar un monto válido a aportar.");
+                    }
+                    if (gp != null && gp.getSaldoPendiente() != null
+                            && request.getMonto().compareTo(gp.getSaldoPendiente()) > 0) {
+                        throw new PaymentException("El monto a aportar ($" + request.getMonto()
+                                + ") supera el saldo pendiente del grupo ($" + gp.getSaldoPendiente() + ").");
+                    }
+                    // request.getMonto() se mantiene intacto sin ser alterado
+                } else {
+                    // Modalidad POR PARTES IGUALES: Cuota fija preasignada
+                    BigDecimal asignado = grupoPagoUsuario.getMontoAsignado();
+                    BigDecimal pagado = grupoPagoUsuario.getMontoPagado() != null
+                            ? grupoPagoUsuario.getMontoPagado()
+                            : BigDecimal.ZERO;
+                    BigDecimal saldoCuota = asignado.subtract(pagado);
+                    if (saldoCuota.compareTo(BigDecimal.ZERO) <= 0) {
+                        if (gp != null && gp.getSaldoPendiente() != null && gp.getSaldoPendiente().compareTo(BigDecimal.ZERO) > 0) {
+                            saldoCuota = gp.getSaldoPendiente();
+                        } else {
+                            throw new PaymentException("La cuota de pago grupal ya se encuentra saldada.");
+                        }
+                    }
+                    if (gp != null && gp.getSaldoPendiente() != null && saldoCuota.compareTo(gp.getSaldoPendiente()) > 0) {
+                        saldoCuota = gp.getSaldoPendiente();
+                    }
+                    request.setMonto(saldoCuota);
                 }
-                request.setMonto(saldoCuota);
             }
         }
 
@@ -1116,26 +1143,52 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
                 if (grupoPagoUsuario == null) {
                     throw new PaymentException("La cuota de pago grupal especificada no existe.");
                 }
-                if (grupoPagoUsuario.getGrupoPago() != null
-                        && !request.getPedidoId().equals(grupoPagoUsuario.getGrupoPago().getPedidoId())) {
-                    throw new PaymentException("La cuota de pago grupal no corresponde al pedido indicado.");
+                GrupoPago gp = grupoPagoUsuario.getGrupoPago();
+                if (gp != null && gp.getPedidoId() != null
+                        && !request.getPedidoId().equals(gp.getPedidoId())) {
+                    boolean pedidoAsociado = grupoPagoPedidoRepository.existsByGrupoPagoIdAndPedidoId(gp.getId(), request.getPedidoId());
+                    if (!pedidoAsociado) {
+                        throw new PaymentException("La cuota de pago grupal no corresponde al pedido indicado.");
+                    }
                 }
                 if (grupoPagoUsuario.getUsuarioId() != null
                         && !grupoPagoUsuario.getUsuarioId().equals(0L)
                         && !grupoPagoUsuario.getUsuarioId().equals(usuarioId)) {
                     throw new PaymentException("La cuota de pago grupal no pertenece al usuario autenticado");
                 }
-                BigDecimal asignado = grupoPagoUsuario.getMontoAsignado() != null
-                        ? grupoPagoUsuario.getMontoAsignado()
-                        : pedidoInfo.getValorTotal();
-                BigDecimal pagado = grupoPagoUsuario.getMontoPagado() != null
-                        ? grupoPagoUsuario.getMontoPagado()
-                        : BigDecimal.ZERO;
-                BigDecimal saldoCuota = asignado.subtract(pagado);
-                if (saldoCuota.compareTo(BigDecimal.ZERO) <= 0) {
-                    throw new PaymentException("La cuota de pago grupal ya se encuentra saldada.");
+
+                boolean esLibre = gp != null && "LIBRE_PAGO".equalsIgnoreCase(gp.getModalidadDivision());
+
+                if (esLibre || grupoPagoUsuario.getMontoAsignado() == null) {
+                    // Modalidad LIBRE APORTE: Respetar el monto que el usuario ingresó
+                    if (request.getMonto() == null || request.getMonto().compareTo(BigDecimal.ZERO) <= 0) {
+                        throw new PaymentException("Debe ingresar un monto válido a aportar.");
+                    }
+                    if (gp != null && gp.getSaldoPendiente() != null
+                            && request.getMonto().compareTo(gp.getSaldoPendiente()) > 0) {
+                        throw new PaymentException("El monto a aportar ($" + request.getMonto()
+                                + ") supera el saldo pendiente del grupo ($" + gp.getSaldoPendiente() + ").");
+                    }
+                    // request.getMonto() se mantiene intacto sin ser alterado
+                } else {
+                    // Modalidad POR PARTES IGUALES: Cuota fija preasignada
+                    BigDecimal asignado = grupoPagoUsuario.getMontoAsignado();
+                    BigDecimal pagado = grupoPagoUsuario.getMontoPagado() != null
+                            ? grupoPagoUsuario.getMontoPagado()
+                            : BigDecimal.ZERO;
+                    BigDecimal saldoCuota = asignado.subtract(pagado);
+                    if (saldoCuota.compareTo(BigDecimal.ZERO) <= 0) {
+                        if (gp != null && gp.getSaldoPendiente() != null && gp.getSaldoPendiente().compareTo(BigDecimal.ZERO) > 0) {
+                            saldoCuota = gp.getSaldoPendiente();
+                        } else {
+                            throw new PaymentException("La cuota de pago grupal ya se encuentra saldada.");
+                        }
+                    }
+                    if (gp != null && gp.getSaldoPendiente() != null && saldoCuota.compareTo(gp.getSaldoPendiente()) > 0) {
+                        saldoCuota = gp.getSaldoPendiente();
+                    }
+                    request.setMonto(saldoCuota);
                 }
-                request.setMonto(saldoCuota);
             }
         }
 
@@ -1816,10 +1869,11 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
 
                 if (nuevoSaldo.compareTo(BigDecimal.ZERO) <= 0) {
                     gp.setEstadoId(2);
-                    String msg = "Vaca/Pago grupal 100% completado con Mercado Pago (" + detailMessage + ")";
+                    String msg = "Pago grupal 100% completado con Mercado Pago (" + detailMessage + ")";
+                    String authCodeFinal = gp.getCodigoUnico() != null ? gp.getCodigoUnico() : effectiveAuth;
                     orderingClient.updateOrderStatus(pedidoPago.getPedidoId(), PedidoPago.ESTADO_APROBADO, msg, null,
-                            effectiveAuth, terminal,
-                            pedidoPago.getMonto(), effectivePaymentMethod);
+                            authCodeFinal, terminal,
+                            gp.getValorTotal(), effectivePaymentMethod);
                     if (notificationServiceClient != null) {
                         try {
                             notificationServiceClient.notificarVacaCompletada(

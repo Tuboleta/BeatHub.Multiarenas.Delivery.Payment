@@ -42,6 +42,9 @@ class PaymentServiceImplTest {
     private GrupoPagoRepository grupoPagoRepository;
 
     @Mock
+    private GrupoPagoPedidoRepository grupoPagoPedidoRepository;
+
+    @Mock
     private ClientePagoRepository clientePagoRepository;
 
     @Mock

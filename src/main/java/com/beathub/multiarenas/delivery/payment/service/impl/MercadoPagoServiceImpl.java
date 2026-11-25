@@ -97,11 +97,12 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
                 if (pedidoInfo.getUsuarioId() != null && !pedidoInfo.getUsuarioId().equals(usuarioId)) {
                     throw new PaymentException("El pedido no pertenece al usuario autenticado");
                 }
-                if (request.getMonto() != null && request.getMonto().compareTo(pedidoInfo.getValorTotal()) != 0) {
+                BigDecimal valorTotalOficial = calcularValorTotalOficial(pedidoInfo, request.getPedidoIds());
+                if (request.getMonto() != null && request.getMonto().compareTo(valorTotalOficial) != 0) {
                     log.warn("[BU-03] Monto manipulado por el cliente en MP ({}). Reemplazado por oficial: {}",
-                            request.getMonto(), pedidoInfo.getValorTotal());
+                            request.getMonto(), valorTotalOficial);
                 }
-                request.setMonto(pedidoInfo.getValorTotal());
+                request.setMonto(valorTotalOficial);
             } else {
                 if (grupoPagoUsuario == null) {
                     throw new PaymentException("La cuota de pago grupal especificada no existe.");
@@ -546,8 +547,20 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
                         .eventDate(it.getEventDate())
                         .build());
             }
-        } else if (pedidoInfo != null && pedidoInfo.getItems() != null && !pedidoInfo.getItems().isEmpty()) {
-            for (var it : pedidoInfo.getItems()) {
+        } else if (pedidoInfo != null && ((pedidoInfo.getItems() != null && !pedidoInfo.getItems().isEmpty())
+                || (pedidoInfo.getSubpedidos() != null && !pedidoInfo.getSubpedidos().isEmpty()))) {
+            List<PedidoClientResponse.CarritoItemClientResponse> allOrderItems = new ArrayList<>();
+            if (pedidoInfo.getItems() != null) {
+                allOrderItems.addAll(pedidoInfo.getItems());
+            }
+            if (pedidoInfo.getSubpedidos() != null) {
+                for (PedidoClientResponse sub : pedidoInfo.getSubpedidos()) {
+                    if (sub.getItems() != null) {
+                        allOrderItems.addAll(sub.getItems());
+                    }
+                }
+            }
+            for (var it : allOrderItems) {
                 BigDecimal unitPrice = it.getPrecioUnitario() != null ? it.getPrecioUnitario() : BigDecimal.ZERO;
                 String unitPriceStr = noDecimals
                         ? unitPrice.setScale(0, java.math.RoundingMode.HALF_UP).toPlainString()
@@ -1134,11 +1147,12 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
                 if (pedidoInfo.getUsuarioId() != null && !pedidoInfo.getUsuarioId().equals(usuarioId)) {
                     throw new PaymentException("El pedido no pertenece al usuario autenticado");
                 }
-                if (request.getMonto() != null && request.getMonto().compareTo(pedidoInfo.getValorTotal()) != 0) {
+                BigDecimal valorTotalOficial = calcularValorTotalOficial(pedidoInfo, request.getPedidoIds());
+                if (request.getMonto() != null && request.getMonto().compareTo(valorTotalOficial) != 0) {
                     log.warn("[BU-03] Monto manipulado por el cliente en MP payWithToken ({}). Reemplazado por oficial: {}",
-                            request.getMonto(), pedidoInfo.getValorTotal());
+                            request.getMonto(), valorTotalOficial);
                 }
-                request.setMonto(pedidoInfo.getValorTotal());
+                request.setMonto(valorTotalOficial);
             } else {
                 if (grupoPagoUsuario == null) {
                     throw new PaymentException("La cuota de pago grupal especificada no existe.");
@@ -2202,5 +2216,32 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
                     ex.getMessage());
         }
         return null;
+    }
+
+    private BigDecimal calcularValorTotalOficial(PedidoClientResponse pedidoInfo, List<Long> pedidoIds) {
+        BigDecimal total = pedidoInfo.getValorTotal() != null ? pedidoInfo.getValorTotal() : BigDecimal.ZERO;
+        if (pedidoInfo.getSubpedidos() != null && !pedidoInfo.getSubpedidos().isEmpty()) {
+            for (PedidoClientResponse sub : pedidoInfo.getSubpedidos()) {
+                if (sub.getValorTotal() != null && sub.getValorTotal().compareTo(BigDecimal.ZERO) > 0) {
+                    total = total.add(sub.getValorTotal());
+                }
+            }
+        } else if (pedidoIds != null && !pedidoIds.isEmpty()) {
+            for (Long otroPedidoId : pedidoIds) {
+                if (otroPedidoId != null && !otroPedidoId.equals(pedidoInfo.getId())) {
+                    try {
+                        PedidoClientResponse otro = orderingClient.getPedido(otroPedidoId, null).orElse(null);
+                        if (otro != null && otro.getValorTotal() != null
+                                && Objects.equals(otro.getUsuarioId(), pedidoInfo.getUsuarioId())
+                                && otro.getValorTotal().compareTo(BigDecimal.ZERO) > 0) {
+                            total = total.add(otro.getValorTotal());
+                        }
+                    } catch (Exception ex) {
+                        log.warn("[BU-03] No se pudo consultar el pedido hermano #{} para validar monto total: {}", otroPedidoId, ex.getMessage());
+                    }
+                }
+            }
+        }
+        return total;
     }
 }

@@ -30,6 +30,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.UUID;
 
 @Service
@@ -120,11 +121,12 @@ public class PaymentServiceImpl implements PaymentService {
                 if (pedido.getUsuarioId() != null && !pedido.getUsuarioId().equals(usuarioId)) {
                     throw new PaymentException("El pedido no pertenece al usuario autenticado");
                 }
-                if (request.getMonto() != null && request.getMonto().compareTo(pedido.getValorTotal()) != 0) {
+                BigDecimal valorTotalOficial = calcularValorTotalOficial(pedido, request.getPedidoIds());
+                if (request.getMonto() != null && request.getMonto().compareTo(valorTotalOficial) != 0) {
                     log.warn("[BU-03] Monto manipulado por el cliente ({}). Reemplazado por el valor oficial: {}",
-                            request.getMonto(), pedido.getValorTotal());
+                            request.getMonto(), valorTotalOficial);
                 }
-                request.setMonto(pedido.getValorTotal());
+                request.setMonto(valorTotalOficial);
             } else {
                 if (grupoPagoUsuario == null) {
                     throw new PaymentException("La cuota de pago grupal especificada no existe.");
@@ -899,12 +901,13 @@ public class PaymentServiceImpl implements PaymentService {
                 if (pedido.getUsuarioId() != null && !pedido.getUsuarioId().equals(usuarioId)) {
                     throw new PaymentException("El pedido no pertenece al usuario autenticado");
                 }
-                if (request.getMonto() != null && request.getMonto().compareTo(pedido.getValorTotal()) != 0) {
+                BigDecimal valorTotalOficial = calcularValorTotalOficial(pedido, request.getPedidoIds());
+                if (request.getMonto() != null && request.getMonto().compareTo(valorTotalOficial) != 0) {
                     log.warn(
                             "[BU-03] Monto manipulado por el cliente en Credibanco payWithToken ({}). Reemplazado por oficial: {}",
-                            request.getMonto(), pedido.getValorTotal());
+                            request.getMonto(), valorTotalOficial);
                 }
-                request.setMonto(pedido.getValorTotal());
+                request.setMonto(valorTotalOficial);
             } else {
                 if (grupoPagoUsuario == null) {
                     throw new PaymentException("La cuota de pago grupal especificada no existe.");
@@ -1846,5 +1849,32 @@ public class PaymentServiceImpl implements PaymentService {
             }
         }
         return 1L;
+    }
+
+    private BigDecimal calcularValorTotalOficial(com.beathub.multiarenas.delivery.payment.client.dto.PedidoClientResponse pedido, List<Long> pedidoIds) {
+        BigDecimal total = pedido.getValorTotal() != null ? pedido.getValorTotal() : BigDecimal.ZERO;
+        if (pedido.getSubpedidos() != null && !pedido.getSubpedidos().isEmpty()) {
+            for (com.beathub.multiarenas.delivery.payment.client.dto.PedidoClientResponse sub : pedido.getSubpedidos()) {
+                if (sub.getValorTotal() != null && sub.getValorTotal().compareTo(BigDecimal.ZERO) > 0) {
+                    total = total.add(sub.getValorTotal());
+                }
+            }
+        } else if (pedidoIds != null && !pedidoIds.isEmpty()) {
+            for (Long otroPedidoId : pedidoIds) {
+                if (otroPedidoId != null && !otroPedidoId.equals(pedido.getId())) {
+                    try {
+                        com.beathub.multiarenas.delivery.payment.client.dto.PedidoClientResponse otro = orderingClient.getPedido(otroPedidoId, null).orElse(null);
+                        if (otro != null && otro.getValorTotal() != null
+                                && Objects.equals(otro.getUsuarioId(), pedido.getUsuarioId())
+                                && otro.getValorTotal().compareTo(BigDecimal.ZERO) > 0) {
+                            total = total.add(otro.getValorTotal());
+                        }
+                    } catch (Exception ex) {
+                        log.warn("[BU-03] No se pudo consultar el pedido hermano #{} para validar monto total: {}", otroPedidoId, ex.getMessage());
+                    }
+                }
+            }
+        }
+        return total;
     }
 }

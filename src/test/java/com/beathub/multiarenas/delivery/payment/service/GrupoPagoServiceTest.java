@@ -12,6 +12,7 @@ import com.beathub.multiarenas.delivery.payment.entity.GrupoPago;
 import com.beathub.multiarenas.delivery.payment.entity.GrupoPagoUsuario;
 import com.beathub.multiarenas.delivery.payment.entity.TipoGrupoPago;
 import com.beathub.multiarenas.delivery.payment.exception.BadRequestException;
+import com.beathub.multiarenas.delivery.payment.repository.GrupoPagoPedidoRepository;
 import com.beathub.multiarenas.delivery.payment.repository.GrupoPagoRepository;
 import com.beathub.multiarenas.delivery.payment.repository.GrupoPagoUsuarioRepository;
 import com.beathub.multiarenas.delivery.payment.repository.PedidoPagoRepository;
@@ -45,6 +46,9 @@ class GrupoPagoServiceTest {
     private GrupoPagoUsuarioRepository grupoPagoUsuarioRepository;
 
     @Mock
+    private GrupoPagoPedidoRepository grupoPagoPedidoRepository;
+
+    @Mock
     private TipoGrupoPagoRepository tipoGrupoPagoRepository;
 
     @Mock
@@ -58,6 +62,9 @@ class GrupoPagoServiceTest {
 
     @Mock
     private QrCodeGeneratorService qrCodeGeneratorService;
+
+    @Mock
+    private com.beathub.multiarenas.delivery.payment.client.AuthServiceClient authClient;
 
     @InjectMocks
     private GrupoPagoServiceImpl grupoPagoService;
@@ -144,7 +151,7 @@ class GrupoPagoServiceTest {
 
         assertNotNull(response);
         assertEquals(100L, response.getId());
-        assertTrue(response.getCodigoUnico().startsWith("VACA-"));
+        assertTrue(response.getCodigoUnico().startsWith("GRP-"));
         assertEquals("POR_PARTES_IGUALES", response.getModalidadDivision());
         assertEquals(new BigDecimal("25000.00"), response.getMontoPreasignado());
         assertEquals(4, response.getCantidadPersonas());
@@ -462,5 +469,31 @@ class GrupoPagoServiceTest {
                 grupoPagoService.cancelarGrupo(100L, 10L));
 
         verify(grupoPagoRepository, never()).save(any());
+    }
+
+    @Test
+    @DisplayName("Debe obtener grupo de pago por pedido secundario de una compra multi-barra")
+    void obtenerPorPedidoId_EncuentraPorPedidoSecundario_MultiBarra() {
+        when(grupoPagoRepository.findByPedidoId(502L)).thenReturn(Optional.empty());
+        when(grupoPagoPedidoRepository.findByPedidoId(502L)).thenReturn(Optional.of(
+                com.beathub.multiarenas.delivery.payment.entity.GrupoPagoPedido.builder()
+                        .grupoPago(grupoPago)
+                        .pedidoId(502L)
+                        .build()
+        ));
+        when(grupoPagoRepository.findById(100L)).thenReturn(Optional.of(grupoPago));
+        when(grupoPagoUsuarioRepository.findByGrupoPagoId(100L)).thenReturn(List.of(grupoPagoUsuario));
+        when(pedidoPagoRepository.findByGrupoPagoUsuario_GrupoPago_Id(100L)).thenReturn(Collections.emptyList());
+        when(grupoPagoPedidoRepository.findByGrupoPagoId(100L)).thenReturn(List.of(
+                com.beathub.multiarenas.delivery.payment.entity.GrupoPagoPedido.builder().grupoPago(grupoPago).pedidoId(501L).build(),
+                com.beathub.multiarenas.delivery.payment.entity.GrupoPagoPedido.builder().grupoPago(grupoPago).pedidoId(502L).build()
+        ));
+
+        GrupoPagoResponse response = grupoPagoService.obtenerPorPedidoId(502L, 10L);
+
+        assertNotNull(response);
+        assertEquals(100L, response.getId());
+        assertEquals(2, response.getPedidoIds().size());
+        assertTrue(response.getPedidoIds().contains(502L));
     }
 }

@@ -6,12 +6,14 @@ import com.beathub.multiarenas.delivery.payment.client.dto.PedidoClientResponse;
 import com.beathub.multiarenas.delivery.payment.dto.request.*;
 import com.beathub.multiarenas.delivery.payment.dto.response.*;
 import com.beathub.multiarenas.delivery.payment.entity.GrupoPago;
+import com.beathub.multiarenas.delivery.payment.entity.GrupoPagoPedido;
 import com.beathub.multiarenas.delivery.payment.entity.GrupoPagoUsuario;
 import com.beathub.multiarenas.delivery.payment.entity.PedidoPago;
 import com.beathub.multiarenas.delivery.payment.entity.TipoGrupoPago;
 import com.beathub.multiarenas.delivery.payment.exception.BadRequestException;
 import com.beathub.multiarenas.delivery.payment.exception.ForbiddenException;
 import com.beathub.multiarenas.delivery.payment.exception.ResourceNotFoundException;
+import com.beathub.multiarenas.delivery.payment.repository.GrupoPagoPedidoRepository;
 import com.beathub.multiarenas.delivery.payment.repository.GrupoPagoRepository;
 import com.beathub.multiarenas.delivery.payment.repository.GrupoPagoUsuarioRepository;
 import com.beathub.multiarenas.delivery.payment.repository.PedidoPagoRepository;
@@ -38,6 +40,7 @@ public class GrupoPagoServiceImpl implements GrupoPagoService {
 
     private final GrupoPagoRepository grupoPagoRepository;
     private final GrupoPagoUsuarioRepository grupoPagoUsuarioRepository;
+    private final GrupoPagoPedidoRepository grupoPagoPedidoRepository;
     private final TipoGrupoPagoRepository tipoGrupoPagoRepository;
     private final PedidoPagoRepository pedidoPagoRepository;
     private final OrderingServiceClient orderingClient;
@@ -169,6 +172,8 @@ public class GrupoPagoServiceImpl implements GrupoPagoService {
             }
 
             grupoPago.setPedidoId(request.getPedidoId());
+            String grupoPedidoPrincipal = pedidoOpt.map(PedidoClientResponse::getGrupoPedidoId).orElse(request.getGrupoPedidoId());
+            grupoPago.setGrupoPedidoId(grupoPedidoPrincipal);
             if (arenaIdFinal != null && !arenaIdFinal.isBlank()) {
                 grupoPago.setArenaId(arenaIdFinal);
             }
@@ -220,13 +225,15 @@ public class GrupoPagoServiceImpl implements GrupoPagoService {
 
             boolean esPermanente = Boolean.TRUE.equals(request.getEsPermanente()) || (request.getTipoGrupoPagoId() != null && request.getTipoGrupoPagoId() == 2);
 
+            String grupoPedidoPrincipal = pedidoOpt.map(PedidoClientResponse::getGrupoPedidoId).orElse(request.getGrupoPedidoId());
             grupoPago = GrupoPago.builder()
                     .codigoUnico(codigoUnico)
                     .nombre(request.getNombre() != null && !request.getNombre().isBlank()
-                            ? request.getNombre()
-                            : "Vaca Pedido #" + request.getPedidoId())
+                            ? request.getNombre().trim()
+                            : codigoUnico)
                     .arenaId(arenaIdFinal)
                     .pedidoId(request.getPedidoId())
+                    .grupoPedidoId(grupoPedidoPrincipal)
                     .tipoGrupoPago(tipoGrupoPago)
                     .esPermanente(esPermanente)
                     .modalidadDivision(modalidad)
@@ -280,9 +287,15 @@ public class GrupoPagoServiceImpl implements GrupoPagoService {
             }
         }
 
-        // Notificar a Ordering Service para vincular el grupo a cada pedido que cubre la vaca
+        // Notificar a Ordering Service para vincular el grupo a cada pedido que cubre el grupo de pago
         for (Long pedidoVacaId : pedidosVaca) {
             orderingClient.asociarGrupoPago(pedidoVacaId, grupoPago.getId(), authToken);
+            if (!grupoPagoPedidoRepository.existsByGrupoPagoIdAndPedidoId(grupoPago.getId(), pedidoVacaId)) {
+                grupoPagoPedidoRepository.save(GrupoPagoPedido.builder()
+                        .grupoPago(grupoPago)
+                        .pedidoId(pedidoVacaId)
+                        .build());
+            }
         }
 
         // Despachar invitaciones asíncronas de notificación (Flujo 8: VACA_INVITATION)
@@ -324,7 +337,8 @@ public class GrupoPagoServiceImpl implements GrupoPagoService {
     @Transactional
     public GrupoPagoResponse obtenerPorCodigo(String codigoUnico, Long currentUsuarioId) {
         GrupoPago grupoPago = grupoPagoRepository.findByCodigoUnico(codigoUnico.trim().toUpperCase())
-                .orElseThrow(() -> new ResourceNotFoundException("Grupo de pago no encontrado con código: " + codigoUnico));
+                .orElseThrow(
+                        () -> new ResourceNotFoundException("Grupo de pago no encontrado con código: " + codigoUnico));
         sincronizarPagosPendientesGrupo(grupoPago);
         grupoPago = grupoPagoRepository.findById(grupoPago.getId()).orElse(grupoPago);
         return mapearAGrupoPagoResponse(grupoPago, currentUsuarioId);
@@ -334,19 +348,23 @@ public class GrupoPagoServiceImpl implements GrupoPagoService {
     @Transactional
     public GrupoPagoResponse obtenerPorPedidoId(Long pedidoId, Long currentUsuarioId) {
         GrupoPago grupoPago = grupoPagoRepository.findByPedidoId(pedidoId)
-                .orElseThrow(() -> new ResourceNotFoundException("No existe un grupo de pago para el pedido: " + pedidoId));
+                .or(() -> grupoPagoPedidoRepository.findByPedidoId(pedidoId).map(GrupoPagoPedido::getGrupoPago))
+                .orElseThrow(
+                        () -> new ResourceNotFoundException("No existe un grupo de pago para el pedido: " + pedidoId));
         sincronizarPagosPendientesGrupo(grupoPago);
         grupoPago = grupoPagoRepository.findById(grupoPago.getId()).orElse(grupoPago);
         return mapearAGrupoPagoResponse(grupoPago, currentUsuarioId);
     }
 
     private void sincronizarPagosPendientesGrupo(GrupoPago grupoPago) {
-        if (grupoPago == null || Integer.valueOf(2).equals(grupoPago.getEstadoId()) || Integer.valueOf(4).equals(grupoPago.getEstadoId())) {
+        if (grupoPago == null || Integer.valueOf(2).equals(grupoPago.getEstadoId())
+                || Integer.valueOf(4).equals(grupoPago.getEstadoId())) {
             return;
         }
 
         try {
-            List<PedidoPago> pagos = new ArrayList<>(pedidoPagoRepository.findByGrupoPagoUsuario_GrupoPago_Id(grupoPago.getId()));
+            List<PedidoPago> pagos = new ArrayList<>(
+                    pedidoPagoRepository.findByGrupoPagoUsuario_GrupoPago_Id(grupoPago.getId()));
             if (grupoPago.getPedidoId() != null) {
                 List<PedidoPago> pagosPedido = pedidoPagoRepository.findByPedidoId(grupoPago.getPedidoId());
                 for (PedidoPago pp : pagosPedido) {
@@ -357,7 +375,8 @@ public class GrupoPagoServiceImpl implements GrupoPagoService {
             }
 
             for (PedidoPago p : pagos) {
-                if (p.getEstadoId() != null && (p.getEstadoId() == PedidoPago.ESTADO_INICIADO || p.getEstadoId() == 1)) {
+                if (p.getEstadoId() != null
+                        && (p.getEstadoId() == PedidoPago.ESTADO_INICIADO || p.getEstadoId() == 1)) {
                     log.info("[GrupoPago] Sincronizando transacción pendiente #{} para grupo {} (pedido #{})",
                             p.getId(), grupoPago.getCodigoUnico(), grupoPago.getPedidoId());
                     try {
@@ -395,7 +414,8 @@ public class GrupoPagoServiceImpl implements GrupoPagoService {
     @Transactional
     public GrupoPagoResponse unirseAGrupo(String codigoUnico, UnirseGrupoRequest request, Long usuarioId) {
         GrupoPago grupoPago = grupoPagoRepository.findByCodigoUnico(codigoUnico.trim().toUpperCase())
-                .orElseThrow(() -> new ResourceNotFoundException("Grupo de pago no encontrado con código: " + codigoUnico));
+                .orElseThrow(
+                        () -> new ResourceNotFoundException("Grupo de pago no encontrado con código: " + codigoUnico));
 
         return ejecutarUnirse(grupoPago, request, usuarioId);
     }
@@ -415,7 +435,8 @@ public class GrupoPagoServiceImpl implements GrupoPagoService {
                     + resolverNombreEstado(grupoPago.getEstadoId()) + " y no admite nuevos participantes.");
         }
 
-        Optional<GrupoPagoUsuario> existenteOpt = grupoPagoUsuarioRepository.findByGrupoPagoIdAndUsuarioId(grupoPago.getId(), usuarioId);
+        Optional<GrupoPagoUsuario> existenteOpt = grupoPagoUsuarioRepository
+                .findByGrupoPagoIdAndUsuarioId(grupoPago.getId(), usuarioId);
         if (existenteOpt.isPresent()) {
             GrupoPagoUsuario existente = existenteOpt.get();
             if (existente.getEstadoId() == 3) {
@@ -446,7 +467,8 @@ public class GrupoPagoServiceImpl implements GrupoPagoService {
 
     @Override
     @Transactional
-    public GrupoPagoResponse agregarParticipante(Long grupoPagoId, AgregarParticipanteRequest request, Long currentUsuarioId) {
+    public GrupoPagoResponse agregarParticipante(Long grupoPagoId, AgregarParticipanteRequest request,
+            Long currentUsuarioId) {
         GrupoPago grupoPago = grupoPagoRepository.findById(grupoPagoId)
                 .orElseThrow(() -> new ResourceNotFoundException("Grupo de pago no encontrado"));
 
@@ -456,11 +478,14 @@ public class GrupoPagoServiceImpl implements GrupoPagoService {
             throw new BadRequestException("No se pueden agregar participantes a un grupo que no está activo.");
         }
 
-        Optional<GrupoPagoUsuario> existente = grupoPagoUsuarioRepository.findByGrupoPagoIdAndUsuarioId(grupoPagoId, request.getUsuarioId());
+        Optional<GrupoPagoUsuario> existente = grupoPagoUsuarioRepository.findByGrupoPagoIdAndUsuarioId(grupoPagoId,
+                request.getUsuarioId());
         if (existente.isPresent()) {
             GrupoPagoUsuario gpu = existente.get();
-            if (request.getMontoAsignado() != null) gpu.setMontoAsignado(request.getMontoAsignado());
-            if (request.getPorcentaje() != null) gpu.setPorcentaje(request.getPorcentaje());
+            if (request.getMontoAsignado() != null)
+                gpu.setMontoAsignado(request.getMontoAsignado());
+            if (request.getPorcentaje() != null)
+                gpu.setPorcentaje(request.getPorcentaje());
             gpu.setEstadoId(1);
             grupoPagoUsuarioRepository.save(gpu);
         } else {
@@ -494,8 +519,7 @@ public class GrupoPagoServiceImpl implements GrupoPagoService {
                 "Líder del Grupo",
                 grupoPago.getNombre(),
                 request.getMontoAsignado() != null ? request.getMontoAsignado() : grupoPago.getMontoPreasignado(),
-                urlVaca
-        );
+                urlVaca);
 
         return mapearAGrupoPagoResponse(grupoPago, currentUsuarioId);
     }
@@ -527,13 +551,15 @@ public class GrupoPagoServiceImpl implements GrupoPagoService {
 
     @Override
     @Transactional
-    public GrupoPagoResponse recalcularCuotas(Long grupoPagoId, RecalcularCuotasRequest request, Long currentUsuarioId) {
+    public GrupoPagoResponse recalcularCuotas(Long grupoPagoId, RecalcularCuotasRequest request,
+            Long currentUsuarioId) {
         GrupoPago grupoPago = grupoPagoRepository.findById(grupoPagoId)
                 .orElseThrow(() -> new ResourceNotFoundException("Grupo de pago no encontrado"));
 
         validarLiderazgo(grupoPago, currentUsuarioId);
 
-        List<GrupoPagoUsuario> participantesActivos = grupoPagoUsuarioRepository.findByGrupoPagoIdAndEstadoIdNot(grupoPagoId, 3);
+        List<GrupoPagoUsuario> participantesActivos = grupoPagoUsuarioRepository
+                .findByGrupoPagoIdAndEstadoIdNot(grupoPagoId, 3);
         if (participantesActivos.isEmpty()) {
             throw new BadRequestException("No hay participantes activos en el grupo.");
         }
@@ -561,12 +587,14 @@ public class GrupoPagoServiceImpl implements GrupoPagoService {
 
     @Override
     @Transactional
-    public PaymentInitResponse pagarCuotaGrupo(Long grupoPagoId, PagarCuotaGrupoRequest request, String arenaId, Long usuarioId) {
+    public PaymentInitResponse pagarCuotaGrupo(Long grupoPagoId, PagarCuotaGrupoRequest request, String arenaId,
+            Long usuarioId) {
         GrupoPago grupoPago = grupoPagoRepository.findById(grupoPagoId)
                 .orElseThrow(() -> new ResourceNotFoundException("Grupo de pago no encontrado"));
 
         if (grupoPago.getEstadoId() != 1) {
-            throw new BadRequestException("El grupo de pago no está activo (Estado: " + resolverNombreEstado(grupoPago.getEstadoId()) + ")");
+            throw new BadRequestException(
+                    "El grupo de pago no está activo (Estado: " + resolverNombreEstado(grupoPago.getEstadoId()) + ")");
         }
 
         if (grupoPago.getSaldoPendiente() != null && grupoPago.getSaldoPendiente().compareTo(BigDecimal.ZERO) <= 0) {
@@ -620,20 +648,27 @@ public class GrupoPagoServiceImpl implements GrupoPagoService {
         BigDecimal montoAPagar = request != null ? request.getMonto() : null;
 
         if (esLibre) {
-            // Cuando es libre pago, el usuario DEBE asignar el valor dentro del rango del saldo pendiente del pedido
+            // Cuando es libre pago, el usuario DEBE asignar el valor dentro del rango del
+            // saldo pendiente del pedido
             if (montoAPagar == null || montoAPagar.compareTo(BigDecimal.ZERO) <= 0) {
-                throw new BadRequestException("En modalidad de libre pago debe ingresar el monto a aportar (entre $0.01 y $" + grupoPago.getSaldoPendiente() + ").");
+                throw new BadRequestException(
+                        "En modalidad de libre pago debe ingresar el monto a aportar (entre $0.01 y $"
+                                + grupoPago.getSaldoPendiente() + ").");
             }
             if (grupoPago.getSaldoPendiente() != null && montoAPagar.compareTo(grupoPago.getSaldoPendiente()) > 0) {
-                throw new BadRequestException("El monto a aportar ($" + montoAPagar + ") no puede superar el saldo pendiente del pedido ($" + grupoPago.getSaldoPendiente() + ").");
+                throw new BadRequestException("El monto a aportar ($" + montoAPagar
+                        + ") no puede superar el saldo pendiente del pedido ($" + grupoPago.getSaldoPendiente() + ").");
             }
         } else {
-            // Cuando es por partes iguales, el valor está preasignado por el sistema (ignorar cualquier monto arbitrario)
-            BigDecimal cuota = gpu.getMontoAsignado() != null ? gpu.getMontoAsignado() : grupoPago.getMontoPreasignado();
+            // Cuando es por partes iguales, el valor está preasignado por el sistema
+            // (ignorar cualquier monto arbitrario)
+            BigDecimal cuota = gpu.getMontoAsignado() != null ? gpu.getMontoAsignado()
+                    : grupoPago.getMontoPreasignado();
             BigDecimal pagado = gpu.getMontoPagado() != null ? gpu.getMontoPagado() : BigDecimal.ZERO;
             montoAPagar = (cuota != null) ? cuota.subtract(pagado).max(BigDecimal.ZERO) : grupoPago.getSaldoPendiente();
 
-            // Si el participante ya pagó su cuota pero desea liquidar el saldo restante del grupo:
+            // Si el participante ya pagó su cuota pero desea liquidar el saldo restante del
+            // grupo:
             if ((montoAPagar == null || montoAPagar.compareTo(BigDecimal.ZERO) <= 0)
                     && grupoPago.getSaldoPendiente() != null
                     && grupoPago.getSaldoPendiente().compareTo(BigDecimal.ZERO) > 0) {
@@ -660,12 +695,14 @@ public class GrupoPagoServiceImpl implements GrupoPagoService {
         initReq.setGrupoPagoUsuarioId(gpu.getId());
         initReq.setReturnUrl(request != null ? request.getReturnUrl() : null);
         initReq.setFailUrl(request != null ? request.getFailUrl() : null);
-        initReq.setDescription(request != null && request.getDescription() != null && !request.getDescription().isBlank()
-                ? request.getDescription()
-                : "Aporte Vaca " + grupoPago.getNombre() + " (" + grupoPago.getCodigoUnico() + ")");
+        initReq.setDescription(
+                request != null && request.getDescription() != null && !request.getDescription().isBlank()
+                        ? request.getDescription()
+                        : "Aporte Grupo " + grupoPago.getNombre() + " (" + grupoPago.getCodigoUnico() + ")");
         initReq.setStatementDescriptor(request != null ? request.getStatementDescriptor() : null);
         java.util.Map<String, Object> extraParams = (request != null && request.getExtraParams() != null)
-                ? new java.util.HashMap<>(request.getExtraParams()) : new java.util.HashMap<>();
+                ? new java.util.HashMap<>(request.getExtraParams())
+                : new java.util.HashMap<>();
         if (request != null) {
             if (request.getNombre() != null && !request.getNombre().isBlank()) {
                 extraParams.put("nombre", request.getNombre().trim());
@@ -689,7 +726,8 @@ public class GrupoPagoServiceImpl implements GrupoPagoService {
         validarLiderazgo(grupoPago, currentUsuarioId);
 
         if (grupoPago.getTotalPagado() != null && grupoPago.getTotalPagado().compareTo(BigDecimal.ZERO) > 0) {
-            throw new BadRequestException("No se puede cancelar el grupo porque ya existen aportes pagados. Debe solicitarse reembolso.");
+            throw new BadRequestException(
+                    "No se puede cancelar el grupo porque ya existen aportes pagados. Debe solicitarse reembolso.");
         }
 
         grupoPago.setEstadoId(4); // 4: Cancelado
@@ -713,7 +751,7 @@ public class GrupoPagoServiceImpl implements GrupoPagoService {
     private String generarCodigoUnico() {
         String codigo;
         do {
-            codigo = "VACA-" + UUID.randomUUID().toString().replace("-", "").substring(0, 6).toUpperCase();
+            codigo = "GRP-" + UUID.randomUUID().toString().replace("-", "").substring(0, 6).toUpperCase();
         } while (grupoPagoRepository.findByCodigoUnico(codigo).isPresent());
         return codigo;
     }
@@ -793,7 +831,16 @@ public class GrupoPagoServiceImpl implements GrupoPagoService {
 
         String baseUrl = resolverBaseUrl();
         String qrCodeData = baseUrl + "/vaca/" + gp.getCodigoUnico();
-        String qrCodeImage = qrCodeGeneratorService != null ? qrCodeGeneratorService.generateQrCodeBase64(qrCodeData, 300, 300) : null;
+        String qrCodeImage = qrCodeGeneratorService != null
+                ? qrCodeGeneratorService.generateQrCodeBase64(qrCodeData, 300, 300)
+                : null;
+
+        List<Long> pedidosGrupo = grupoPagoPedidoRepository.findByGrupoPagoId(gp.getId()).stream()
+                .map(GrupoPagoPedido::getPedidoId)
+                .collect(Collectors.toList());
+        if (pedidosGrupo.isEmpty() && gp.getPedidoId() != null) {
+            pedidosGrupo = List.of(gp.getPedidoId());
+        }
 
         return GrupoPagoResponse.builder()
                 .id(gp.getId())
@@ -801,6 +848,8 @@ public class GrupoPagoServiceImpl implements GrupoPagoService {
                 .nombre(gp.getNombre())
                 .arenaId(gp.getArenaId())
                 .pedidoId(gp.getPedidoId())
+                .grupoPedidoId(gp.getGrupoPedidoId())
+                .pedidoIds(pedidosGrupo)
                 .tipoGrupoPagoId(gp.getTipoGrupoPago() != null ? gp.getTipoGrupoPago().getId() : 1)
                 .tipoGrupoPagoNombre(gp.getTipoGrupoPago() != null ? gp.getTipoGrupoPago().getNombre() : "TEMPORAL_DIA")
                 .esPermanente(gp.getEsPermanente())
@@ -878,7 +927,8 @@ public class GrupoPagoServiceImpl implements GrupoPagoService {
     }
 
     private String resolverNombreEstado(Integer estadoId) {
-        if (estadoId == null) return "DESCONOCIDO";
+        if (estadoId == null)
+            return "DESCONOCIDO";
         return switch (estadoId) {
             case 1 -> "ACTIVO";
             case 2 -> "COMPLETADO";
@@ -889,7 +939,8 @@ public class GrupoPagoServiceImpl implements GrupoPagoService {
     }
 
     private String resolverNombreEstadoUsuario(Integer estadoId) {
-        if (estadoId == null) return "DESCONOCIDO";
+        if (estadoId == null)
+            return "DESCONOCIDO";
         return switch (estadoId) {
             case 1 -> "PENDIENTE";
             case 2 -> "PAGADO";
@@ -899,7 +950,8 @@ public class GrupoPagoServiceImpl implements GrupoPagoService {
     }
 
     private String resolverNombreEstadoPago(Integer estadoId) {
-        if (estadoId == null) return "DESCONOCIDO";
+        if (estadoId == null)
+            return "DESCONOCIDO";
         return switch (estadoId) {
             case 1 -> "INICIADO";
             case 2 -> "APROBADO";
@@ -927,22 +979,24 @@ public class GrupoPagoServiceImpl implements GrupoPagoService {
                 try {
                     java.net.URI uri = new java.net.URI(referer);
                     return uri.getScheme() + "://" + uri.getAuthority();
-                } catch (Exception ignored) {}
+                } catch (Exception ignored) {
+                }
             }
         }
         if (pwaBaseUrl != null && !pwaBaseUrl.isBlank() && !pwaBaseUrl.contains("localhost")) {
             return pwaBaseUrl.replaceAll("/+$", "");
         }
-        return (pwaBaseUrl != null && !pwaBaseUrl.isBlank()) ? pwaBaseUrl : "https://delivery-daviarena-stg.beat-hub.com";
+        return (pwaBaseUrl != null && !pwaBaseUrl.isBlank()) ? pwaBaseUrl
+                : "https://delivery-daviarena-stg.beat-hub.com";
     }
 
     private Long parseArenaId(String arenaId) {
         if (arenaId != null) {
             try {
                 return Long.parseLong(arenaId);
-            } catch (NumberFormatException ignored) {}
+            } catch (NumberFormatException ignored) {
+            }
         }
         return 1L;
     }
 }
-

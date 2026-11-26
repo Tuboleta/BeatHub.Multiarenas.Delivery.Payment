@@ -91,6 +91,8 @@ spec:
               value: "BiteUp DAVI"
             - name: PAYMENT_SONDA_ENABLED
               value: "false"
+            - name: APP_AUDIT_ENABLED
+              value: "true"
           resources:
             requests:
               cpu: "250m"

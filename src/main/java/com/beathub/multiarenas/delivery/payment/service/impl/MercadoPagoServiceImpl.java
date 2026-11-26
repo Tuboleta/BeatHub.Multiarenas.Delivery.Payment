@@ -13,6 +13,7 @@ import com.beathub.multiarenas.delivery.payment.dto.response.*;
 import com.beathub.multiarenas.delivery.payment.entity.*;
 import com.beathub.multiarenas.delivery.payment.exception.PaymentException;
 import com.beathub.multiarenas.delivery.payment.exception.ResourceNotFoundException;
+import com.beathub.multiarenas.delivery.payment.exception.UnauthorizedException;
 import com.beathub.multiarenas.delivery.payment.repository.*;
 import com.beathub.multiarenas.delivery.payment.service.HmacSignatureService;
 import com.beathub.multiarenas.delivery.payment.service.MercadoPagoService;
@@ -1011,6 +1012,15 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
                         pedidoPago.setActionCodeDescription(evalStatusDetail);
 
                         int newEstadoId = mapMpStatusToEstadoId(evalStatus, evalStatusDetail);
+                        if (newEstadoId == PedidoPago.ESTADO_APROBADO) {
+                            BigDecimal mpAmount = (firstPayment != null && firstPayment.getPaidAmount() != null)
+                                    ? firstPayment.getPaidAmount()
+                                    : (firstPayment != null && firstPayment.getAmount() != null
+                                            ? firstPayment.getAmount()
+                                            : mpOrder.getTotalAmount());
+                            validatePaymentIntegrity(pedidoPago, mpAmount, mpOrder.getCurrencyId(),
+                                    mpOrder.getExternalReference(), "v1/orders:" + pedidoPago.getMpOrderId());
+                        }
                         applyStateTransition(pedidoPago, newEstadoId, evalStatus, evalStatusDetail, resolvedMedioPago,
                                 resolvedTerminal);
 
@@ -1042,6 +1052,11 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
 
                         int newEstadoId = mapMpStatusToEstadoId(paymentDetail.getStatus(),
                                 paymentDetail.getStatusDetail());
+                        if (newEstadoId == PedidoPago.ESTADO_APROBADO) {
+                            validatePaymentIntegrity(pedidoPago, paymentDetail.getTransactionAmount(),
+                                    paymentDetail.getCurrencyId(), paymentDetail.getExternalReference(),
+                                    "v1/payments:" + pedidoPago.getMpPaymentId());
+                        }
                         applyStateTransition(pedidoPago, newEstadoId, paymentDetail.getStatus(),
                                 paymentDetail.getStatusDetail(), resolvedMedioPago);
 
@@ -1077,6 +1092,10 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
                         resolvedMedioPago = p.resolveFriendlyPaymentName();
 
                         int newEstadoId = mapMpStatusToEstadoId(p.getStatus(), p.getStatusDetail());
+                        if (newEstadoId == PedidoPago.ESTADO_APROBADO) {
+                            validatePaymentIntegrity(pedidoPago, p.getTransactionAmount(), p.getCurrencyId(),
+                                    p.getExternalReference(), "v1/payments/search:" + p.getId());
+                        }
                         applyStateTransition(pedidoPago, newEstadoId, p.getStatus(), p.getStatusDetail(),
                                 resolvedMedioPago);
                     }
@@ -1539,17 +1558,19 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
         log.info("[MercadoPago Webhook] Recibido payload: {}, xSignature={}, xRequestId={}, dataId={}",
                 rawBody, xSignature, xRequestId, dataId);
 
-        // 1. Validar firma HMAC SHA-256 obligatoria si secret está configurado
-        // (ALTA-01)
+        // 1. Validar firma HMAC SHA-256 obligatoria (Fail-Closed: C-01)
         String secret = mercadoPagoProperties.getWebhookSecret();
-        if (secret != null && !secret.isBlank()) {
-            if (xSignature == null || xSignature.isBlank() || xRequestId == null || xRequestId.isBlank()) {
-                log.error("[MercadoPago Webhook] Headers de firma ausentes (x-signature={}, x-request-id={})",
-                        xSignature, xRequestId);
-                throw new PaymentException("Headers de autenticación x-signature y x-request-id son obligatorios");
-            }
-            validateWebhookSignature(secret, rawBody, xSignature, xRequestId, dataId);
+        if (secret == null || secret.isBlank()) {
+            log.error(
+                    "[MercadoPago Webhook] Webhook secret no configurado; rechazando notificación por seguridad (Fail-Closed)");
+            throw new UnauthorizedException("Webhook secret de Mercado Pago no configurado");
         }
+        if (xSignature == null || xSignature.isBlank() || xRequestId == null || xRequestId.isBlank()) {
+            log.error("[MercadoPago Webhook] Headers de firma ausentes (x-signature={}, x-request-id={})",
+                    xSignature, xRequestId);
+            throw new UnauthorizedException("Headers de autenticación x-signature y x-request-id son obligatorios");
+        }
+        validateWebhookSignature(secret, rawBody, xSignature, xRequestId, dataId);
 
         // 2. Extraer ID de la orden o pago
         String orderId = dataId;
@@ -1666,7 +1687,7 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
             String receivedSignature = parts.get("v1");
             if (ts == null || receivedSignature == null) {
                 log.error("[MercadoPago Webhook] x-signature inválido o incompleto");
-                throw new PaymentException("Header x-signature incompleto o inválido en webhook");
+                throw new UnauthorizedException("Header x-signature incompleto o inválido en webhook");
             }
 
             // Ventana anti-replay de 5 minutos
@@ -1676,11 +1697,11 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
                 if (Math.abs(nowSeconds - tsSeconds) > 300) {
                     log.error("[MercadoPago Webhook] Timestamp x-signature desfasado (ts: {}, actual: {})", ts,
                             nowSeconds);
-                    throw new PaymentException("Timestamp x-signature fuera de la ventana de validez permitida");
+                    throw new UnauthorizedException("Timestamp x-signature fuera de la ventana de validez permitida");
                 }
             } catch (NumberFormatException nfe) {
                 log.error("[MercadoPago Webhook] Timestamp inválido en x-signature: {}", ts);
-                throw new PaymentException("Timestamp numérico requerido en x-signature");
+                throw new UnauthorizedException("Timestamp numérico requerido en x-signature");
             }
 
             String resolvedId = dataId != null ? dataId : "";
@@ -1695,15 +1716,48 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
             boolean valid = hmacSignatureService.verifySignature(secret, manifest, receivedSignature);
             if (!valid) {
                 log.error("[MercadoPago Webhook] Firma HMAC SHA256 no coincidió con el secreto");
-                throw new PaymentException("Firma HMAC SHA-256 no coincide con el webhook recibido");
+                throw new UnauthorizedException("Firma HMAC SHA-256 no coincide con el webhook recibido");
             } else {
                 log.info("[MercadoPago Webhook] Firma HMAC SHA256 verificada exitosamente");
             }
-        } catch (PaymentException pe) {
-            throw pe;
+        } catch (UnauthorizedException ue) {
+            throw ue;
         } catch (Exception ex) {
             log.error("[MercadoPago Webhook] Excepción verificando firma de webhook: {}", ex.getMessage());
-            throw new PaymentException("Error validando firma HMAC del webhook: " + ex.getMessage());
+            throw new UnauthorizedException("Error validando firma HMAC del webhook: " + ex.getMessage());
+        }
+    }
+
+    /**
+     * C-01: Verifica integridad del pago reportado por Mercado Pago antes de
+     * aprobar el PedidoPago local.
+     * Valida relación pago-pedido (external_reference), monto cobrado (>= monto
+     * esperado) y moneda.
+     */
+    private void validatePaymentIntegrity(PedidoPago pedidoPago, BigDecimal mpAmount, String mpCurrency,
+            String mpExternalRef, String source) {
+        if (mpExternalRef != null && !mpExternalRef.isBlank()
+                && pedidoPago.getReferenciaPago() != null && !pedidoPago.getReferenciaPago().isBlank()
+                && !mpExternalRef.trim().equals(pedidoPago.getReferenciaPago().trim())) {
+            log.error(
+                    "[C-01][MercadoPago] Referencia externa no coincide para PedidoPago #{}: esperada={}, recibida={}, source={}",
+                    pedidoPago.getId(), pedidoPago.getReferenciaPago(), mpExternalRef, source);
+            throw new PaymentException("La referencia externa del pago no corresponde al pedido");
+        }
+
+        if (mpAmount != null && pedidoPago.getMonto() != null
+                && mpAmount.compareTo(pedidoPago.getMonto()) < 0) {
+            log.error("[C-01][MercadoPago] Monto insuficiente para PedidoPago #{}: esperado={}, pagado={}, source={}",
+                    pedidoPago.getId(), pedidoPago.getMonto(), mpAmount, source);
+            throw new PaymentException("El monto pagado en Mercado Pago es inferior al monto del pedido");
+        }
+
+        if (mpCurrency != null && !mpCurrency.isBlank()
+                && pedidoPago.getMoneda() != null && !pedidoPago.getMoneda().isBlank()
+                && !mpCurrency.trim().equalsIgnoreCase(pedidoPago.getMoneda().trim())) {
+            log.error("[C-01][MercadoPago] Moneda no coincide para PedidoPago #{}: esperada={}, recibida={}, source={}",
+                    pedidoPago.getId(), pedidoPago.getMoneda(), mpCurrency, source);
+            throw new PaymentException("La moneda del pago en Mercado Pago no coincide con la del pedido");
         }
     }
 

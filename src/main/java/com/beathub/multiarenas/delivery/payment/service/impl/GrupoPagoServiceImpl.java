@@ -52,7 +52,7 @@ public class GrupoPagoServiceImpl implements GrupoPagoService {
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     private jakarta.servlet.http.HttpServletRequest httpRequest;
 
-    @Value("${app.pwa.base-url:https://delivery-daviarena-stg.beat-hub.com}")
+    @Value("${app.pwa.base-url:${PWA_BASE_URL:http://localhost:3000}}")
     private String pwaBaseUrl;
 
     @Override
@@ -301,7 +301,7 @@ public class GrupoPagoServiceImpl implements GrupoPagoService {
         // Despachar invitaciones asíncronas de notificación (Flujo 8: VACA_INVITATION)
         if (request.getParticipantes() != null && !request.getParticipantes().isEmpty()) {
             Long arenaIdNumeric = parseArenaId(grupoPago.getArenaId());
-            String urlVaca = pwaBaseUrl + "/vaca/" + grupoPago.getCodigoUnico();
+            String urlVaca = resolverBaseUrl() + "/vaca/" + grupoPago.getCodigoUnico();
             for (ParticipanteInicialDto p : request.getParticipantes()) {
                 if (p.getUsuarioId() != null && !p.getUsuarioId().equals(usuarioId)) {
                     BigDecimal cuota = esLibre ? null : (p.getMontoAsignado() != null ? p.getMontoAsignado() : cuotaPreasignada);
@@ -553,7 +553,7 @@ public class GrupoPagoServiceImpl implements GrupoPagoService {
 
         // Despachar notificación asíncrona de invitación (Flujo 8: VACA_INVITATION)
         Long arenaIdNumeric = parseArenaId(grupoPago.getArenaId());
-        String urlVaca = pwaBaseUrl + "/vaca/" + grupoPago.getCodigoUnico();
+        String urlVaca = resolverBaseUrl() + "/vaca/" + grupoPago.getCodigoUnico();
         notificationServiceClient.notificarInvitacionVaca(
                 arenaIdNumeric,
                 request.getUsuarioId(),
@@ -667,12 +667,18 @@ public class GrupoPagoServiceImpl implements GrupoPagoService {
                     });
         } else {
             // Participante invitado / amigo que accede mediante enlace o QR sin registrarse
-            String nombreInvitado = (request != null && request.getNombre() != null && !request.getNombre().isBlank())
-                    ? request.getNombre().trim()
-                    : "Invitado";
-            String emailInvitado = (request != null && request.getEmail() != null && !request.getEmail().isBlank())
-                    ? request.getEmail().trim()
-                    : null;
+            if (request == null || request.getNombre() == null || request.getNombre().isBlank()) {
+                throw new BadRequestException("El nombre del pagador es obligatorio.");
+            }
+            if (request.getEmail() == null || request.getEmail().isBlank() || !request.getEmail().contains("@")) {
+                throw new BadRequestException("El correo electrónico del pagador es obligatorio para el comprobante.");
+            }
+            if (request.getNumeroDocumento() == null || request.getNumeroDocumento().isBlank()) {
+                throw new BadRequestException("El número de documento de identidad del pagador es obligatorio.");
+            }
+
+            String nombreInvitado = request.getNombre().trim();
+            String emailInvitado = request.getEmail().trim();
 
             BigDecimal montoAsignado = esLibre ? null : grupoPago.getMontoPreasignado();
             GrupoPagoUsuario nuevo = GrupoPagoUsuario.builder()
@@ -752,6 +758,36 @@ public class GrupoPagoServiceImpl implements GrupoPagoService {
                         ? request.getDescription()
                         : "Aporte Grupo " + grupoPago.getNombre() + " (" + grupoPago.getCodigoUnico() + ")");
         initReq.setStatementDescriptor(request != null ? request.getStatementDescriptor() : null);
+
+        // Mapear PayerDto explícito para conciliar con pasarelas (Mercado Pago / Credibanco)
+        InitPaymentRequest.PayerDto payerDto = new InitPaymentRequest.PayerDto();
+        if (request != null) {
+            if (request.getNombre() != null && !request.getNombre().isBlank()) {
+                String full = request.getNombre().trim();
+                payerDto.setName(full);
+                String[] p = full.split("\\s+", 2);
+                payerDto.setFirstName(p[0]);
+                if (p.length > 1 && !p[1].isBlank()) {
+                    payerDto.setLastName(p[1]);
+                } else {
+                    payerDto.setLastName("Invitado");
+                }
+            }
+            if (request.getEmail() != null && !request.getEmail().isBlank()) {
+                payerDto.setEmail(request.getEmail().trim());
+            }
+            if (request.getTelefono() != null && !request.getTelefono().isBlank()) {
+                payerDto.setPhone(request.getTelefono().trim());
+            }
+            if (request.getTipoDocumento() != null && !request.getTipoDocumento().isBlank()) {
+                payerDto.setIdentificationType(request.getTipoDocumento().trim());
+            }
+            if (request.getNumeroDocumento() != null && !request.getNumeroDocumento().isBlank()) {
+                payerDto.setIdentificationNumber(request.getNumeroDocumento().trim());
+            }
+        }
+        initReq.setPayer(payerDto);
+
         java.util.Map<String, Object> extraParams = (request != null && request.getExtraParams() != null)
                 ? new java.util.HashMap<>(request.getExtraParams())
                 : new java.util.HashMap<>();
@@ -761,6 +797,16 @@ public class GrupoPagoServiceImpl implements GrupoPagoService {
             }
             if (request.getEmail() != null && !request.getEmail().isBlank()) {
                 extraParams.put("email", request.getEmail().trim());
+            }
+            if (request.getTipoDocumento() != null && !request.getTipoDocumento().isBlank()) {
+                extraParams.put("tipoDocumento", request.getTipoDocumento().trim());
+            }
+            if (request.getNumeroDocumento() != null && !request.getNumeroDocumento().isBlank()) {
+                extraParams.put("documento", request.getNumeroDocumento().trim());
+                extraParams.put("numeroDocumento", request.getNumeroDocumento().trim());
+            }
+            if (request.getTelefono() != null && !request.getTelefono().isBlank()) {
+                extraParams.put("telefono", request.getTelefono().trim());
             }
         }
         initReq.setExtraParams(extraParams);
@@ -1017,7 +1063,7 @@ public class GrupoPagoServiceImpl implements GrupoPagoService {
     private String resolverBaseUrl() {
         if (httpRequest != null) {
             String origin = httpRequest.getHeader("Origin");
-            if (origin != null && !origin.isBlank() && !origin.contains("localhost")) {
+            if (origin != null && !origin.isBlank()) {
                 return origin.replaceAll("/+$", "");
             }
             String xForwardedHost = httpRequest.getHeader("X-Forwarded-Host");
@@ -1026,8 +1072,14 @@ public class GrupoPagoServiceImpl implements GrupoPagoService {
                 String scheme = (proto != null && !proto.isBlank()) ? proto : "https";
                 return scheme + "://" + xForwardedHost.replaceAll("/+$", "");
             }
+            String host = httpRequest.getHeader("Host");
+            if (host != null && !host.isBlank()) {
+                String proto = httpRequest.getHeader("X-Forwarded-Proto");
+                String scheme = (proto != null && !proto.isBlank()) ? proto : (httpRequest.isSecure() ? "https" : "http");
+                return scheme + "://" + host.replaceAll("/+$", "");
+            }
             String referer = httpRequest.getHeader("Referer");
-            if (referer != null && !referer.isBlank() && !referer.contains("localhost")) {
+            if (referer != null && !referer.isBlank()) {
                 try {
                     java.net.URI uri = new java.net.URI(referer);
                     return uri.getScheme() + "://" + uri.getAuthority();
@@ -1035,11 +1087,10 @@ public class GrupoPagoServiceImpl implements GrupoPagoService {
                 }
             }
         }
-        if (pwaBaseUrl != null && !pwaBaseUrl.isBlank() && !pwaBaseUrl.contains("localhost")) {
+        if (pwaBaseUrl != null && !pwaBaseUrl.isBlank()) {
             return pwaBaseUrl.replaceAll("/+$", "");
         }
-        return (pwaBaseUrl != null && !pwaBaseUrl.isBlank()) ? pwaBaseUrl
-                : "https://delivery-daviarena-stg.beat-hub.com";
+        return "http://localhost:3000";
     }
 
     private Long parseArenaId(String arenaId) {

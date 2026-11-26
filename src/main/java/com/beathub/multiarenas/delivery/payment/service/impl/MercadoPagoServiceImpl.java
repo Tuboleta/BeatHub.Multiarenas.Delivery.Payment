@@ -110,7 +110,8 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
                 GrupoPago gp = grupoPagoUsuario.getGrupoPago();
                 if (gp != null && gp.getPedidoId() != null
                         && !request.getPedidoId().equals(gp.getPedidoId())) {
-                    boolean pedidoAsociado = grupoPagoPedidoRepository.existsByGrupoPagoIdAndPedidoId(gp.getId(), request.getPedidoId());
+                    boolean pedidoAsociado = grupoPagoPedidoRepository.existsByGrupoPagoIdAndPedidoId(gp.getId(),
+                            request.getPedidoId());
                     if (!pedidoAsociado) {
                         throw new PaymentException("La cuota de pago grupal no corresponde al pedido indicado.");
                     }
@@ -142,13 +143,15 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
                             : BigDecimal.ZERO;
                     BigDecimal saldoCuota = asignado.subtract(pagado);
                     if (saldoCuota.compareTo(BigDecimal.ZERO) <= 0) {
-                        if (gp != null && gp.getSaldoPendiente() != null && gp.getSaldoPendiente().compareTo(BigDecimal.ZERO) > 0) {
+                        if (gp != null && gp.getSaldoPendiente() != null
+                                && gp.getSaldoPendiente().compareTo(BigDecimal.ZERO) > 0) {
                             saldoCuota = gp.getSaldoPendiente();
                         } else {
                             throw new PaymentException("La cuota de pago grupal ya se encuentra saldada.");
                         }
                     }
-                    if (gp != null && gp.getSaldoPendiente() != null && saldoCuota.compareTo(gp.getSaldoPendiente()) > 0) {
+                    if (gp != null && gp.getSaldoPendiente() != null
+                            && saldoCuota.compareTo(gp.getSaldoPendiente()) > 0) {
                         saldoCuota = gp.getSaldoPendiente();
                     }
                     request.setMonto(saldoCuota);
@@ -423,13 +426,17 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
         }
 
         if (payerEmail == null || payerEmail.isBlank()) {
-            payerEmail = "cliente_" + usuarioId + "@daviarena.com";
+            payerEmail = (usuarioId != null && usuarioId > 0)
+                    ? "cliente_" + usuarioId + "@daviarena.com"
+                    : (grupoPagoUsuario != null && grupoPagoUsuario.getGrupoPago() != null
+                            ? "guest.grupo" + grupoPagoUsuario.getGrupoPago().getId() + "@beathub.com"
+                            : "guest_" + System.currentTimeMillis() + "@beathub.com");
         }
         if (payerFirstName == null || payerFirstName.isBlank()) {
             payerFirstName = "Cliente";
         }
         if (payerLastName == null || payerLastName.isBlank()) {
-            payerLastName = "";
+            payerLastName = "Invitado";
         }
 
         // Sanitizar teléfono para PSE y Mercado Pago (separar estrictamente código de
@@ -1086,7 +1093,8 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
         String referenciaPago = "MP-REC-" + System.currentTimeMillis() + "-"
                 + UUID.randomUUID().toString().substring(0, 6).toUpperCase();
 
-        // 1. Buscar la tarjeta tokenizada guardada (Aislamiento estricto por usuario - CRIT-05)
+        // 1. Buscar la tarjeta tokenizada guardada (Aislamiento estricto por usuario -
+        // CRIT-05)
         TarjetaClientePago tarjeta = null;
         if (request.getBindingId().matches("\\d+")) {
             Long cardId = Long.valueOf(request.getBindingId());
@@ -1103,7 +1111,8 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
         }
         if (tarjeta == null) {
             throw new PaymentException(
-                    "No se encontró la tarjeta asociada o no pertenece al usuario autenticado: " + request.getBindingId());
+                    "No se encontró la tarjeta asociada o no pertenece al usuario autenticado: "
+                            + request.getBindingId());
         }
 
         ClientePago cliente = tarjeta.getClientePago();
@@ -1126,16 +1135,19 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
                 ? grupoPagoUsuarioRepository.findById(request.getGrupoPagoUsuarioId()).orElse(null)
                 : null;
 
-        // BU-03 / CRIT-04: Validación estricta y sincronización del monto contra Ordering en payWithToken (Fail-Closed)
+        // BU-03 / CRIT-04: Validación estricta y sincronización del monto contra
+        // Ordering en payWithToken (Fail-Closed)
         if (request.getPedidoId() != null) {
             PedidoClientResponse pedidoInfo;
             try {
                 pedidoInfo = orderingClient.getPedido(request.getPedidoId(), null)
-                        .orElseThrow(() -> new PaymentException("Pedido #" + request.getPedidoId() + " no encontrado en el servicio de órdenes."));
+                        .orElseThrow(() -> new PaymentException(
+                                "Pedido #" + request.getPedidoId() + " no encontrado en el servicio de órdenes."));
             } catch (PaymentException pe) {
                 throw pe;
             } catch (Exception ex) {
-                log.error("[BU-03] Error consultando Ordering para pedido #{}: {}", request.getPedidoId(), ex.getMessage());
+                log.error("[BU-03] Error consultando Ordering para pedido #{}: {}", request.getPedidoId(),
+                        ex.getMessage());
                 throw new PaymentException("El servicio de órdenes no está disponible. No se puede iniciar el pago.");
             }
 
@@ -1149,7 +1161,8 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
                 }
                 BigDecimal valorTotalOficial = calcularValorTotalOficial(pedidoInfo, request.getPedidoIds());
                 if (request.getMonto() != null && request.getMonto().compareTo(valorTotalOficial) != 0) {
-                    log.warn("[BU-03] Monto manipulado por el cliente en MP payWithToken ({}). Reemplazado por oficial: {}",
+                    log.warn(
+                            "[BU-03] Monto manipulado por el cliente en MP payWithToken ({}). Reemplazado por oficial: {}",
                             request.getMonto(), valorTotalOficial);
                 }
                 request.setMonto(valorTotalOficial);
@@ -1160,7 +1173,8 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
                 GrupoPago gp = grupoPagoUsuario.getGrupoPago();
                 if (gp != null && gp.getPedidoId() != null
                         && !request.getPedidoId().equals(gp.getPedidoId())) {
-                    boolean pedidoAsociado = grupoPagoPedidoRepository.existsByGrupoPagoIdAndPedidoId(gp.getId(), request.getPedidoId());
+                    boolean pedidoAsociado = grupoPagoPedidoRepository.existsByGrupoPagoIdAndPedidoId(gp.getId(),
+                            request.getPedidoId());
                     if (!pedidoAsociado) {
                         throw new PaymentException("La cuota de pago grupal no corresponde al pedido indicado.");
                     }
@@ -1192,13 +1206,15 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
                             : BigDecimal.ZERO;
                     BigDecimal saldoCuota = asignado.subtract(pagado);
                     if (saldoCuota.compareTo(BigDecimal.ZERO) <= 0) {
-                        if (gp != null && gp.getSaldoPendiente() != null && gp.getSaldoPendiente().compareTo(BigDecimal.ZERO) > 0) {
+                        if (gp != null && gp.getSaldoPendiente() != null
+                                && gp.getSaldoPendiente().compareTo(BigDecimal.ZERO) > 0) {
                             saldoCuota = gp.getSaldoPendiente();
                         } else {
                             throw new PaymentException("La cuota de pago grupal ya se encuentra saldada.");
                         }
                     }
-                    if (gp != null && gp.getSaldoPendiente() != null && saldoCuota.compareTo(gp.getSaldoPendiente()) > 0) {
+                    if (gp != null && gp.getSaldoPendiente() != null
+                            && saldoCuota.compareTo(gp.getSaldoPendiente()) > 0) {
                         saldoCuota = gp.getSaldoPendiente();
                     }
                     request.setMonto(saldoCuota);
@@ -1481,11 +1497,13 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
         log.info("[MercadoPago Webhook] Recibido payload: {}, xSignature={}, xRequestId={}, dataId={}",
                 rawBody, xSignature, xRequestId, dataId);
 
-        // 1. Validar firma HMAC SHA-256 obligatoria si secret está configurado (ALTA-01)
+        // 1. Validar firma HMAC SHA-256 obligatoria si secret está configurado
+        // (ALTA-01)
         String secret = mercadoPagoProperties.getWebhookSecret();
         if (secret != null && !secret.isBlank()) {
             if (xSignature == null || xSignature.isBlank() || xRequestId == null || xRequestId.isBlank()) {
-                log.error("[MercadoPago Webhook] Headers de firma ausentes (x-signature={}, x-request-id={})", xSignature, xRequestId);
+                log.error("[MercadoPago Webhook] Headers de firma ausentes (x-signature={}, x-request-id={})",
+                        xSignature, xRequestId);
                 throw new PaymentException("Headers de autenticación x-signature y x-request-id son obligatorios");
             }
             validateWebhookSignature(secret, rawBody, xSignature, xRequestId, dataId);
@@ -1880,7 +1898,8 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
                 BigDecimal valorTotal = gp.getValorTotal() != null ? gp.getValorTotal() : BigDecimal.ZERO;
                 BigDecimal nuevoSaldo = valorTotal.subtract(nuevoTotalPagado).max(BigDecimal.ZERO);
 
-                // Tolerancia para centavos o pesos residuales por redondeo de cuotas (COP: <= $1.00)
+                // Tolerancia para centavos o pesos residuales por redondeo de cuotas (COP: <=
+                // $1.00)
                 BigDecimal TOLERANCIA_REDONDEO = new BigDecimal("1.00");
                 if (nuevoSaldo.compareTo(TOLERANCIA_REDONDEO) <= 0) {
                     nuevoSaldo = BigDecimal.ZERO;
@@ -2243,7 +2262,8 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
                             total = total.add(otro.getValorTotal());
                         }
                     } catch (Exception ex) {
-                        log.warn("[BU-03] No se pudo consultar el pedido hermano #{} para validar monto total: {}", otroPedidoId, ex.getMessage());
+                        log.warn("[BU-03] No se pudo consultar el pedido hermano #{} para validar monto total: {}",
+                                otroPedidoId, ex.getMessage());
                     }
                 }
             }

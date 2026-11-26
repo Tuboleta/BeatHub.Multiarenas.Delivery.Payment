@@ -42,6 +42,9 @@ class PaymentServiceImplTest {
     private GrupoPagoRepository grupoPagoRepository;
 
     @Mock
+    private GrupoPagoPedidoRepository grupoPagoPedidoRepository;
+
+    @Mock
     private ClientePagoRepository clientePagoRepository;
 
     @Mock
@@ -61,6 +64,9 @@ class PaymentServiceImplTest {
 
     @Mock
     private HmacSignatureService hmacSignatureService;
+
+    @Mock
+    private MercadoPagoService mercadoPagoService;
 
     @InjectMocks
     private PaymentServiceImpl paymentService;
@@ -102,6 +108,8 @@ class PaymentServiceImplTest {
                 .monto(new BigDecimal("50000.00"))
                 .estadoId(1)
                 .build();
+
+        org.springframework.test.util.ReflectionTestUtils.setField(paymentService, "defaultGateway", "CREDIBANCO");
     }
 
     @Test
@@ -115,7 +123,7 @@ class PaymentServiceImplTest {
 
         paymentService.processCredibancoCallback("CRED-99-001", "PAY-99-001", "deposited", 1, "sig", "alias");
 
-        assertEquals(2, pedidoPago.getEstadoId()); // Pago aprobado
+        assertEquals(PedidoPago.ESTADO_APROBADO, pedidoPago.getEstadoId()); // Pago aprobado
         assertNotNull(pedidoPago.getFechaPago());
 
         // Aporte usuario actualizado
@@ -146,7 +154,7 @@ class PaymentServiceImplTest {
 
         paymentService.processCredibancoCallback("CRED-99-001", "PAY-99-001", "deposited", 1, "sig", "alias");
 
-        assertEquals(2, pedidoPago.getEstadoId());
+        assertEquals(PedidoPago.ESTADO_APROBADO, pedidoPago.getEstadoId());
         assertEquals(0, new BigDecimal("100000.00").compareTo(grupoPago.getTotalPagado()));
         assertEquals(0, BigDecimal.ZERO.compareTo(grupoPago.getSaldoPendiente()));
         assertEquals(2, grupoPago.getEstadoId()); // 2: Completado (100% Pagado)
@@ -388,6 +396,13 @@ class PaymentServiceImplTest {
                 eq(5L)
         )).thenReturn(regResp);
 
+        com.beathub.multiarenas.delivery.payment.client.dto.PedidoClientResponse pedResp =
+                new com.beathub.multiarenas.delivery.payment.client.dto.PedidoClientResponse();
+        pedResp.setId(44L);
+        pedResp.setUsuarioId(5L);
+        pedResp.setValorTotal(new BigDecimal("18600.00"));
+        when(orderingClient.getPedido(eq(44L), any())).thenReturn(Optional.of(pedResp));
+
         com.beathub.multiarenas.delivery.payment.dto.request.InitPaymentRequest req = new com.beathub.multiarenas.delivery.payment.dto.request.InitPaymentRequest();
         req.setPedidoId(44L);
         req.setMonto(new BigDecimal("18600.00"));
@@ -440,6 +455,13 @@ class PaymentServiceImplTest {
                 eq("1"),
                 eq(5L)
         )).thenReturn(regResp);
+
+        com.beathub.multiarenas.delivery.payment.client.dto.PedidoClientResponse pedResp =
+                new com.beathub.multiarenas.delivery.payment.client.dto.PedidoClientResponse();
+        pedResp.setId(44L);
+        pedResp.setUsuarioId(5L);
+        pedResp.setValorTotal(new BigDecimal("18600.00"));
+        when(orderingClient.getPedido(eq(44L), any())).thenReturn(Optional.of(pedResp));
 
         com.beathub.multiarenas.delivery.payment.dto.request.InitPaymentRequest req = new com.beathub.multiarenas.delivery.payment.dto.request.InitPaymentRequest();
         req.setPedidoId(44L);

@@ -79,6 +79,56 @@ public class NotificationServiceClient {
         enviarEvento(payload);
     }
 
+    @Async
+    public void notificarCambioEstadoPago(Long arenaId, Long usuarioId, Long pedidoId, Long grupoPagoId,
+                                         String codigoUnico, Integer estadoId, String estadoNombre,
+                                         BigDecimal monto, String observacion) {
+        if (usuarioId == null || usuarioId <= 0) {
+            return;
+        }
+        Map<String, Object> datos = new HashMap<>();
+        datos.put("pedidoId", pedidoId);
+        datos.put("estado", estadoNombre != null ? estadoNombre : "Actualizado");
+        datos.put("estadoId", estadoId);
+        if (grupoPagoId != null) {
+            datos.put("grupoPagoId", grupoPagoId);
+        }
+        if (codigoUnico != null) {
+            datos.put("codigoUnico", codigoUnico);
+        }
+        if (monto != null) {
+            datos.put("monto", monto);
+        }
+        if (observacion != null) {
+            datos.put("observacion", observacion);
+        }
+
+        NotificationEventPayload payload = NotificationEventPayload.builder()
+                .eventId(UUID.randomUUID().toString())
+                .arenaId(arenaId)
+                .usuarioId(usuarioId)
+                .tipoEventoId(2) // 2: ORDER_STATUS_CHANGED
+                .tipoNotificacionIds(List.of(5)) // 5: IN_APP (Realtime WebSocket)
+                .destinatario(DestinatarioPayload.builder().build())
+                .datos(datos)
+                .timestamp(Instant.now().toString())
+                .build();
+
+        enviarEvento(payload);
+    }
+
+    @Async
+    public void notificarCambioEstadoPagoMultiple(Long arenaId, List<Long> usuarioIds, Long pedidoId, Long grupoPagoId,
+                                                 String codigoUnico, Integer estadoId, String estadoNombre,
+                                                 BigDecimal monto, String observacion) {
+        if (usuarioIds == null || usuarioIds.isEmpty()) return;
+        for (Long uid : usuarioIds) {
+            if (uid != null && uid > 0) {
+                notificarCambioEstadoPago(arenaId, uid, pedidoId, grupoPagoId, codigoUnico, estadoId, estadoNombre, monto, observacion);
+            }
+        }
+    }
+
     private void enviarEvento(NotificationEventPayload payload) {
         try {
             String targetEndpoint = notificationUrl.endsWith("/")

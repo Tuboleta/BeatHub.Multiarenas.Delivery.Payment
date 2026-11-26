@@ -29,9 +29,21 @@ public class PagarCuotaGrupoRequest {
 
     private String description;
 
+    @com.fasterxml.jackson.annotation.JsonAlias({"statement_descriptor", "statementDescriptor"})
+    private String statementDescriptor;
+
     private String nombre;
 
     private String email;
+
+    @com.fasterxml.jackson.annotation.JsonAlias({"tipo_documento", "identificationType", "tipoIdentificacion"})
+    private String tipoDocumento;
+
+    @com.fasterxml.jackson.annotation.JsonAlias({"numero_documento", "identificationNumber", "documento", "cedula"})
+    private String numeroDocumento;
+
+    @com.fasterxml.jackson.annotation.JsonAlias({"phone", "celular"})
+    private String telefono;
 
     private Map<String, Object> extraParams;
 }

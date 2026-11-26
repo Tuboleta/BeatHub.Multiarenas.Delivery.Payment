@@ -13,12 +13,15 @@ import com.beathub.multiarenas.delivery.payment.dto.response.*;
 import com.beathub.multiarenas.delivery.payment.entity.*;
 import com.beathub.multiarenas.delivery.payment.exception.PaymentException;
 import com.beathub.multiarenas.delivery.payment.exception.ResourceNotFoundException;
+import com.beathub.multiarenas.delivery.payment.exception.UnauthorizedException;
 import com.beathub.multiarenas.delivery.payment.repository.*;
 import com.beathub.multiarenas.delivery.payment.service.HmacSignatureService;
 import com.beathub.multiarenas.delivery.payment.service.MercadoPagoService;
 import com.beathub.multiarenas.delivery.payment.service.IntegrationAuditService;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.PersistenceContext;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -38,6 +41,7 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
     private final MedioPagoRepository medioPagoRepository;
     private final GrupoPagoUsuarioRepository grupoPagoUsuarioRepository;
     private final GrupoPagoRepository grupoPagoRepository;
+    private final com.beathub.multiarenas.delivery.payment.repository.GrupoPagoPedidoRepository grupoPagoPedidoRepository;
     private final ClientePagoRepository clientePagoRepository;
     private final TarjetaClientePagoRepository tarjetaClientePagoRepository;
     private final MercadoPagoRestClient mercadoPagoClient;
@@ -48,7 +52,22 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
     private final HmacSignatureService hmacSignatureService;
     private final ObjectMapper objectMapper;
 
+    @PersistenceContext
+    private EntityManager entityManager;
+
     private static final int PASARELA_MERCADOPAGO_ID = IntegrationAuditService.SERVICIO_MERCADOPAGO;
+
+    /**
+     * Ventana mínima entre consultas síncronas a la API de Mercado Pago para un
+     * mismo pago.
+     * Protege el Gateway y los límites de tasa (rate limits) de Mercado Pago bajo
+     * tráfico masivo,
+     * permitiendo que el Webhook actualice la BD en tiempo real sin tormentas de
+     * polling.
+     */
+    private static final long EXTERNAL_SYNC_COOLDOWN_MS = 15_000L;
+    private static final int MAX_SYNC_CACHE_ENTRIES = 5_000;
+    private final java.util.concurrent.ConcurrentHashMap<Long, Long> lastExternalSyncByPagoId = new java.util.concurrent.ConcurrentHashMap<>();
 
     @Override
     @Transactional
@@ -67,30 +86,89 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
                 ? grupoPagoUsuarioRepository.findById(request.getGrupoPagoUsuarioId()).orElse(null)
                 : null;
 
-        // Validar monto contra servicio Ordering y cargar datos del pedido
+        // BU-03: Validación estricta y sincronización del monto contra Ordering
+        // (Fail-Closed)
         PedidoClientResponse pedidoInfo = null;
         if (request.getPedidoId() != null) {
             try {
-                pedidoInfo = orderingClient.getPedido(request.getPedidoId(), null).orElse(null);
-                if (pedidoInfo != null) {
-                    if (pedidoInfo.getUsuarioId() != null && !pedidoInfo.getUsuarioId().equals(usuarioId)
-                            && request.getGrupoPagoUsuarioId() == null) {
-                        throw new PaymentException("El pedido no pertenece al usuario autenticado");
-                    }
-                    if (request.getGrupoPagoUsuarioId() == null && pedidoInfo.getValorTotal() != null
-                            && pedidoInfo.getValorTotal().compareTo(BigDecimal.ZERO) > 0) {
-                        if (request.getMonto() == null
-                                || request.getMonto().compareTo(pedidoInfo.getValorTotal()) != 0) {
-                            log.info("Monto de pago Mercado Pago sincronizado con valor oficial del pedido: {} -> {}",
-                                    request.getMonto(), pedidoInfo.getValorTotal());
-                            request.setMonto(pedidoInfo.getValorTotal());
-                        }
-                    }
-                }
+                pedidoInfo = orderingClient.getPedido(request.getPedidoId(), null)
+                        .orElseThrow(() -> new PaymentException(
+                                "Pedido #" + request.getPedidoId() + " no encontrado en el servicio de órdenes."));
             } catch (PaymentException pe) {
                 throw pe;
             } catch (Exception ex) {
-                log.warn("No se pudo validar el pedido con Ordering para Mercado Pago: {}", ex.getMessage());
+                log.error("[BU-03] Error consultando Ordering para pedido #{}: {}", request.getPedidoId(),
+                        ex.getMessage());
+                throw new PaymentException("El servicio de órdenes no está disponible. No se puede iniciar el pago.");
+            }
+
+            if (pedidoInfo.getValorTotal() == null || pedidoInfo.getValorTotal().compareTo(BigDecimal.ZERO) <= 0) {
+                throw new PaymentException("El pedido no tiene un monto válido para pago.");
+            }
+
+            if (request.getGrupoPagoUsuarioId() == null) {
+                if (pedidoInfo.getUsuarioId() != null && !pedidoInfo.getUsuarioId().equals(usuarioId)) {
+                    throw new PaymentException("El pedido no pertenece al usuario autenticado");
+                }
+                BigDecimal valorTotalOficial = calcularValorTotalOficial(pedidoInfo, request.getPedidoIds());
+                if (request.getMonto() != null && request.getMonto().compareTo(valorTotalOficial) != 0) {
+                    log.warn("[BU-03] Monto manipulado por el cliente en MP ({}). Reemplazado por oficial: {}",
+                            request.getMonto(), valorTotalOficial);
+                }
+                request.setMonto(valorTotalOficial);
+            } else {
+                if (grupoPagoUsuario == null) {
+                    throw new PaymentException("La cuota de pago grupal especificada no existe.");
+                }
+                GrupoPago gp = grupoPagoUsuario.getGrupoPago();
+                if (gp != null && gp.getPedidoId() != null
+                        && !request.getPedidoId().equals(gp.getPedidoId())) {
+                    boolean pedidoAsociado = grupoPagoPedidoRepository.existsByGrupoPagoIdAndPedidoId(gp.getId(),
+                            request.getPedidoId());
+                    if (!pedidoAsociado) {
+                        throw new PaymentException("La cuota de pago grupal no corresponde al pedido indicado.");
+                    }
+                }
+                if (grupoPagoUsuario.getUsuarioId() != null
+                        && !grupoPagoUsuario.getUsuarioId().equals(0L)
+                        && !grupoPagoUsuario.getUsuarioId().equals(usuarioId)) {
+                    throw new PaymentException("La cuota de pago grupal no pertenece al usuario autenticado");
+                }
+
+                boolean esLibre = gp != null && "LIBRE_PAGO".equalsIgnoreCase(gp.getModalidadDivision());
+
+                if (esLibre || grupoPagoUsuario.getMontoAsignado() == null) {
+                    // Modalidad LIBRE APORTE: Respetar el monto que el usuario ingresó
+                    if (request.getMonto() == null || request.getMonto().compareTo(BigDecimal.ZERO) <= 0) {
+                        throw new PaymentException("Debe ingresar un monto válido a aportar.");
+                    }
+                    if (gp != null && gp.getSaldoPendiente() != null
+                            && request.getMonto().compareTo(gp.getSaldoPendiente()) > 0) {
+                        throw new PaymentException("El monto a aportar ($" + request.getMonto()
+                                + ") supera el saldo pendiente del grupo ($" + gp.getSaldoPendiente() + ").");
+                    }
+                    // request.getMonto() se mantiene intacto sin ser alterado
+                } else {
+                    // Modalidad POR PARTES IGUALES: Cuota fija preasignada
+                    BigDecimal asignado = grupoPagoUsuario.getMontoAsignado();
+                    BigDecimal pagado = grupoPagoUsuario.getMontoPagado() != null
+                            ? grupoPagoUsuario.getMontoPagado()
+                            : BigDecimal.ZERO;
+                    BigDecimal saldoCuota = asignado.subtract(pagado);
+                    if (saldoCuota.compareTo(BigDecimal.ZERO) <= 0) {
+                        if (gp != null && gp.getSaldoPendiente() != null
+                                && gp.getSaldoPendiente().compareTo(BigDecimal.ZERO) > 0) {
+                            saldoCuota = gp.getSaldoPendiente();
+                        } else {
+                            throw new PaymentException("La cuota de pago grupal ya se encuentra saldada.");
+                        }
+                    }
+                    if (gp != null && gp.getSaldoPendiente() != null
+                            && saldoCuota.compareTo(gp.getSaldoPendiente()) > 0) {
+                        saldoCuota = gp.getSaldoPendiente();
+                    }
+                    request.setMonto(saldoCuota);
+                }
             }
         }
 
@@ -167,10 +245,20 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
                 payerFirstName = p.getFirstName().trim();
             if (p.getLastName() != null && !p.getLastName().isBlank())
                 payerLastName = p.getLastName().trim();
-            if (p.getName() != null && !p.getName().isBlank() && payerFirstName == null)
-                payerFirstName = p.getName().trim();
             if (p.getSurname() != null && !p.getSurname().isBlank() && payerLastName == null)
                 payerLastName = p.getSurname().trim();
+            if (p.getName() != null && !p.getName().isBlank()) {
+                String fullName = p.getName().trim();
+                if (payerFirstName == null && payerLastName == null) {
+                    String[] parts = fullName.split("\\s+", 2);
+                    payerFirstName = parts[0];
+                    if (parts.length > 1) {
+                        payerLastName = parts[1];
+                    }
+                } else if (payerFirstName == null) {
+                    payerFirstName = fullName;
+                }
+            }
             if (p.getPhone() != null && !p.getPhone().isBlank())
                 payerPhone = p.getPhone().trim();
             if (p.getPhoneAreaCode() != null && !p.getPhoneAreaCode().isBlank())
@@ -180,12 +268,20 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
             if (p.getIdentificationNumber() != null && !p.getIdentificationNumber().isBlank())
                 payerDocNumber = p.getIdentificationNumber().trim();
             if (p.getAddress() != null) {
+                String stName = p.getAddress().getStreetName();
+                String zip = p.getAddress().getZipCode();
+                String stNum = sanitizeStreetNumber(p.getAddress().getStreetNumber(), stName, zip);
+                String cityName = p.getAddress().getCityName();
+                String neigh = (p.getAddress().getNeighborhood() != null && !p.getAddress().getNeighborhood().isBlank())
+                        ? p.getAddress().getNeighborhood().trim()
+                        : cityName;
+
                 payerAddress = MpOrderRequest.Address.builder()
-                        .zipCode(p.getAddress().getZipCode())
-                        .streetName(p.getAddress().getStreetName())
-                        .streetNumber(p.getAddress().getStreetNumber())
-                        .neighborhood(p.getAddress().getNeighborhood())
-                        .city(p.getAddress().getCityName())
+                        .zipCode(zip)
+                        .streetName(stName)
+                        .streetNumber(stNum)
+                        .neighborhood(neigh)
+                        .city(cityName)
                         .build();
             }
         }
@@ -238,9 +334,9 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
 
         // D. Prioridad 4: Datos del usuario autenticado en Auth Service
         UserClientResponse userInfo = null;
-        if (payerEmail == null || payerFirstName == null || payerDocNumber == null) {
+        if (effectiveUsuarioId > 0) {
             try {
-                userInfo = authServiceClient.getUsuario(usuarioId).orElse(null);
+                userInfo = authServiceClient.getUsuario(effectiveUsuarioId).orElse(null);
                 if (userInfo != null) {
                     if (payerEmail == null && userInfo.getEmail() != null && !userInfo.getEmail().isBlank()) {
                         payerEmail = userInfo.getEmail().trim();
@@ -259,20 +355,109 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
                             && !userInfo.getNumeroDocumento().isBlank()) {
                         payerDocNumber = userInfo.getNumeroDocumento().trim();
                     }
+                    if (payerAddress == null && userInfo.getDireccion() != null && !userInfo.getDireccion().isBlank()) {
+                        String dir = userInfo.getDireccion().trim();
+                        String zip = userInfo.getCodigoPostal() != null && !userInfo.getCodigoPostal().isBlank()
+                                ? userInfo.getCodigoPostal().trim()
+                                : "110111";
+                        String stName = dir;
+                        String stNum = null;
+                        java.util.regex.Matcher m = java.util.regex.Pattern
+                                .compile("^(.*?)(?:#|No\\.?|N°)\\s*(.*)$", java.util.regex.Pattern.CASE_INSENSITIVE)
+                                .matcher(dir);
+                        if (m.find()) {
+                            String p1 = m.group(1).trim();
+                            String p2 = m.group(2).trim();
+                            if (!p1.isEmpty())
+                                stName = p1;
+                            if (!p2.isEmpty())
+                                stNum = p2;
+                        }
+                        stNum = sanitizeStreetNumber(stNum, stName, zip);
+                        String city = userInfo.getCiudad() != null && !userInfo.getCiudad().isBlank()
+                                ? userInfo.getCiudad().trim()
+                                : "Bogota";
+                        String neighborhood = city;
+                        payerAddress = MpOrderRequest.Address.builder()
+                                .streetName(stName)
+                                .streetNumber(stNum)
+                                .neighborhood(neighborhood)
+                                .zipCode(zip)
+                                .city(city)
+                                .build();
+                    }
                 }
             } catch (Exception ex) {
                 log.warn("No se pudo obtener datos del usuario desde Auth: {}", ex.getMessage());
             }
         }
 
+        // E. Prioridad 5: additional_info provisto explícitamente en el request
+        if (request.getAdditionalInfo() != null && request.getAdditionalInfo().getPayer() != null) {
+            var ap = request.getAdditionalInfo().getPayer();
+            if (ap.getAddress() != null && payerAddress == null) {
+                String stName = ap.getAddress().getStreetName();
+                String zip = ap.getAddress().getZipCode();
+                String stNum = sanitizeStreetNumber(ap.getAddress().getStreetNumber(), stName, zip);
+                String city = ap.getAddress().getCityName();
+                String neigh = (ap.getAddress().getNeighborhood() != null
+                        && !ap.getAddress().getNeighborhood().isBlank())
+                                ? ap.getAddress().getNeighborhood().trim()
+                                : city;
+
+                payerAddress = MpOrderRequest.Address.builder()
+                        .zipCode(zip)
+                        .streetName(stName)
+                        .streetNumber(stNum)
+                        .neighborhood(neigh)
+                        .city(city)
+                        .build();
+            }
+            if (ap.getPhone() != null && !ap.getPhone().isBlank() && payerPhone == null) {
+                payerPhone = ap.getPhone().trim();
+            }
+            if (ap.getPhoneAreaCode() != null && !ap.getPhoneAreaCode().isBlank()
+                    && (payerPhoneAreaCode == null || "57".equals(payerPhoneAreaCode))) {
+                payerPhoneAreaCode = ap.getPhoneAreaCode().trim();
+            }
+        }
+
+        // Si el primer nombre contiene el nombre completo y no hay apellido, separar
+        // adecuadamente
+        if (payerFirstName != null && (payerLastName == null || payerLastName.isBlank())) {
+            String[] parts = payerFirstName.trim().split("\\s+", 2);
+            if (parts.length > 1) {
+                payerFirstName = parts[0];
+                payerLastName = parts[1];
+            }
+        }
+
+        // Si aún falta apellido, intentar recuperarlo de los datos de usuario en Auth
+        if ((payerLastName == null || payerLastName.isBlank()) && userInfo != null && userInfo.getApellidos() != null
+                && !userInfo.getApellidos().isBlank()) {
+            payerLastName = userInfo.getApellidos().trim();
+        }
+
         if (payerEmail == null || payerEmail.isBlank()) {
-            payerEmail = "cliente_" + usuarioId + "@daviarena.com";
+            payerEmail = (usuarioId != null && usuarioId > 0)
+                    ? "cliente_" + usuarioId + "@daviarena.com"
+                    : (grupoPagoUsuario != null && grupoPagoUsuario.getGrupoPago() != null
+                            ? "guest.grupo" + grupoPagoUsuario.getGrupoPago().getId() + "@beathub.com"
+                            : "guest_" + System.currentTimeMillis() + "@beathub.com");
         }
         if (payerFirstName == null || payerFirstName.isBlank()) {
             payerFirstName = "Cliente";
         }
         if (payerLastName == null || payerLastName.isBlank()) {
-            payerLastName = "Registrado";
+            payerLastName = "Invitado";
+        }
+
+        // Sanitizar teléfono para PSE y Mercado Pago (separar estrictamente código de
+        // área y número local sin prefijos duplicados)
+        if (payerPhone != null && !payerPhone.isBlank()) {
+            String[] cleanPhone = sanitizePhone(payerPhone, payerPhoneAreaCode);
+            payerPhoneAreaCode = cleanPhone[0];
+            payerPhone = cleanPhone[1];
         }
 
         MpOrderRequest.Payer.PayerBuilder payerBuilder = MpOrderRequest.Payer.builder()
@@ -282,34 +467,49 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
 
         if (payerPhone != null && !payerPhone.isBlank()) {
             payerBuilder.phone(MpOrderRequest.Phone.builder()
-                    .areaCode(payerPhoneAreaCode != null ? payerPhoneAreaCode : "57")
+                    .areaCode(payerPhoneAreaCode)
                     .number(payerPhone)
                     .build());
         }
 
+        if (payerAddress != null) {
+            String sanitizedNum = sanitizeStreetNumber(
+                    payerAddress.getStreetNumber(),
+                    payerAddress.getStreetName(),
+                    payerAddress.getZipCode());
+            payerAddress.setStreetNumber(sanitizedNum);
+
+            if ((payerAddress.getNeighborhood() == null || payerAddress.getNeighborhood().isBlank())
+                    && payerAddress.getCity() != null && !payerAddress.getCity().isBlank()) {
+                payerAddress.setNeighborhood(payerAddress.getCity().trim());
+            }
+            payerBuilder.address(payerAddress);
+        }
+
         // Validación estricta anti-error Mercado Pago:
-        // Si el documento es un ssoId (UUID o formato no documento) o coincide con el ssoId del usuario,
+        // Si el documento es un ssoId (UUID o formato no documento) o coincide con el
+        // ssoId del usuario,
         // no enviarlo para evitar el error de validación 400 de Mercado Pago.
         if (payerDocNumber != null) {
             boolean isInvalidDoc = payerDocNumber.isBlank()
                     || payerDocNumber.matches("^[0-9a-fA-F-]{32,36}$")
                     || payerDocNumber.toLowerCase().startsWith("tbl_")
-                    || (userInfo != null && userInfo.getSsoId() != null && payerDocNumber.equalsIgnoreCase(userInfo.getSsoId()));
+                    || (userInfo != null && userInfo.getSsoId() != null
+                            && payerDocNumber.equalsIgnoreCase(userInfo.getSsoId()));
             if (isInvalidDoc) {
-                log.warn("[MercadoPago] Documento del cliente '{}' corresponde a un identificador ssoId/UUID no admisible por Mercado Pago. Omitiendo campo identification.", payerDocNumber);
+                log.warn(
+                        "[MercadoPago] Documento del cliente '{}' corresponde a un identificador ssoId/UUID no admisible por Mercado Pago. Omitiendo campo identification.",
+                        payerDocNumber);
                 payerDocNumber = null;
             }
         }
 
         if (payerDocNumber != null && !payerDocNumber.isBlank()) {
             payerBuilder.identification(MpOrderRequest.Identification.builder()
-                    .type(payerDocType != null ? payerDocType : "CC")
+                    .type(normalizeIdentificationType(payerDocType,
+                            userInfo != null ? userInfo.getTipoDocumentoId() : null))
                     .number(payerDocNumber)
                     .build());
-        }
-
-        if (payerAddress != null) {
-            payerBuilder.address(payerAddress);
         }
 
         MpOrderRequest.Payer payer = payerBuilder.build();
@@ -367,8 +567,20 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
                         .eventDate(it.getEventDate())
                         .build());
             }
-        } else if (pedidoInfo != null && pedidoInfo.getItems() != null && !pedidoInfo.getItems().isEmpty()) {
-            for (var it : pedidoInfo.getItems()) {
+        } else if (pedidoInfo != null && ((pedidoInfo.getItems() != null && !pedidoInfo.getItems().isEmpty())
+                || (pedidoInfo.getSubpedidos() != null && !pedidoInfo.getSubpedidos().isEmpty()))) {
+            List<PedidoClientResponse.CarritoItemClientResponse> allOrderItems = new ArrayList<>();
+            if (pedidoInfo.getItems() != null) {
+                allOrderItems.addAll(pedidoInfo.getItems());
+            }
+            if (pedidoInfo.getSubpedidos() != null) {
+                for (PedidoClientResponse sub : pedidoInfo.getSubpedidos()) {
+                    if (sub.getItems() != null) {
+                        allOrderItems.addAll(sub.getItems());
+                    }
+                }
+            }
+            for (var it : allOrderItems) {
                 BigDecimal unitPrice = it.getPrecioUnitario() != null ? it.getPrecioUnitario() : BigDecimal.ZERO;
                 String unitPriceStr = noDecimals
                         ? unitPrice.setScale(0, java.math.RoundingMode.HALF_UP).toPlainString()
@@ -445,8 +657,17 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
         }
 
         String statementDesc = (request.getStatementDescriptor() != null && !request.getStatementDescriptor().isBlank())
-                ? request.getStatementDescriptor()
-                : (arenaId != null ? arenaId.toUpperCase() : "DELIVERY");
+                ? request.getStatementDescriptor().trim()
+                : resolveDefaultStatementDescriptor(arenaId);
+
+        if (statementDesc != null) {
+            String lower = statementDesc.toLowerCase();
+            if (lower.contains("daviarena") || lower.contains("daviar")) {
+                statementDesc = "BiteUp DAVI";
+            } else if (statementDesc.length() > 13) {
+                statementDesc = statementDesc.substring(0, 13).trim();
+            }
+        }
 
         MpOrderRequest.OnlineConfig onlineConfig = MpOrderRequest.OnlineConfig.builder()
                 .successUrl(returnUrl)
@@ -460,16 +681,184 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
                 .online(onlineConfig)
                 .build();
 
+        // 5. Construir additional_info (Datos de industria recomendados para
+        // homologación Checkout Pro)
+        String payerRegistrationDate = null;
+        if (request.getAdditionalInfo() != null && request.getAdditionalInfo().getPayer() != null
+                && request.getAdditionalInfo().getPayer().getRegistrationDate() != null) {
+            payerRegistrationDate = request.getAdditionalInfo().getPayer().getRegistrationDate().trim();
+        } else if (request.getPayer() != null && request.getPayer().getRegistrationDate() != null) {
+            payerRegistrationDate = request.getPayer().getRegistrationDate().trim();
+        } else if (request.getExtraParams() != null && request.getExtraParams().get("registration_date") != null) {
+            payerRegistrationDate = String.valueOf(request.getExtraParams().get("registration_date")).trim();
+        } else if (request.getExtraParams() != null && request.getExtraParams().get("registrationDate") != null) {
+            payerRegistrationDate = String.valueOf(request.getExtraParams().get("registrationDate")).trim();
+        } else if (userInfo != null && userInfo.getCreacionFecha() != null) {
+            payerRegistrationDate = userInfo.getCreacionFecha().atZone(java.time.ZoneId.of("America/Bogota"))
+                    .format(java.time.format.DateTimeFormatter.ISO_OFFSET_DATE_TIME);
+        } else if (effectiveUsuarioId > 0) {
+            payerRegistrationDate = obtenerFechaRegistroUsuarioAuth(effectiveUsuarioId);
+        }
+
+        Boolean isPrimeUser = null;
+        if (request.getAdditionalInfo() != null && request.getAdditionalInfo().getPayer() != null
+                && request.getAdditionalInfo().getPayer().getIsPrimeUser() != null) {
+            isPrimeUser = request.getAdditionalInfo().getPayer().getIsPrimeUser();
+        } else if (request.getPayer() != null && request.getPayer().getIsPrimeUser() != null) {
+            isPrimeUser = request.getPayer().getIsPrimeUser();
+        } else if (request.getExtraParams() != null && request.getExtraParams().containsKey("is_prime_user")) {
+            isPrimeUser = Boolean.parseBoolean(String.valueOf(request.getExtraParams().get("is_prime_user")));
+        } else if (request.getExtraParams() != null && request.getExtraParams().containsKey("isPrimeUser")) {
+            isPrimeUser = Boolean.parseBoolean(String.valueOf(request.getExtraParams().get("isPrimeUser")));
+        }
+
+        Boolean isFirstPurchaseOnline = null;
+        String payerLastPurchase = null;
+
+        if (request.getAdditionalInfo() != null && request.getAdditionalInfo().getPayer() != null) {
+            if (request.getAdditionalInfo().getPayer().getIsFirstPurchaseOnline() != null) {
+                isFirstPurchaseOnline = request.getAdditionalInfo().getPayer().getIsFirstPurchaseOnline();
+            }
+            if (request.getAdditionalInfo().getPayer().getLastPurchase() != null) {
+                payerLastPurchase = request.getAdditionalInfo().getPayer().getLastPurchase().trim();
+            }
+        }
+        if (request.getPayer() != null) {
+            if (isFirstPurchaseOnline == null && request.getPayer().getIsFirstPurchaseOnline() != null) {
+                isFirstPurchaseOnline = request.getPayer().getIsFirstPurchaseOnline();
+            }
+            if (payerLastPurchase == null && request.getPayer().getLastPurchase() != null) {
+                payerLastPurchase = request.getPayer().getLastPurchase().trim();
+            }
+        }
+        if (request.getExtraParams() != null) {
+            if (isFirstPurchaseOnline == null && request.getExtraParams().containsKey("is_first_purchase_online")) {
+                isFirstPurchaseOnline = Boolean
+                        .parseBoolean(String.valueOf(request.getExtraParams().get("is_first_purchase_online")));
+            }
+            if (isFirstPurchaseOnline == null && request.getExtraParams().containsKey("isFirstPurchaseOnline")) {
+                isFirstPurchaseOnline = Boolean
+                        .parseBoolean(String.valueOf(request.getExtraParams().get("isFirstPurchaseOnline")));
+            }
+            if (payerLastPurchase == null && request.getExtraParams().get("last_purchase") != null) {
+                payerLastPurchase = String.valueOf(request.getExtraParams().get("last_purchase")).trim();
+            }
+            if (payerLastPurchase == null && request.getExtraParams().get("lastPurchase") != null) {
+                payerLastPurchase = String.valueOf(request.getExtraParams().get("lastPurchase")).trim();
+            }
+        }
+
+        if (effectiveUsuarioId > 0) {
+            final Long currentPagoId = pedidoPago.getId();
+            List<PedidoPago> prevPagos = pedidoPagoRepository.findByUsuarioId(effectiveUsuarioId);
+            long approvedCount = 0;
+            PedidoPago lastApprovedPago = null;
+
+            for (PedidoPago p : prevPagos) {
+                if (p.getId() != null && !p.getId().equals(currentPagoId)
+                        && Integer.valueOf(PedidoPago.ESTADO_APROBADO).equals(p.getEstadoId())) {
+                    approvedCount++;
+                    if (lastApprovedPago == null || (p.getCreacionFecha() != null
+                            && (lastApprovedPago.getCreacionFecha() == null
+                                    || p.getCreacionFecha().isAfter(lastApprovedPago.getCreacionFecha())))) {
+                        lastApprovedPago = p;
+                    }
+                }
+            }
+
+            if (isFirstPurchaseOnline == null) {
+                isFirstPurchaseOnline = (approvedCount == 0);
+            }
+
+            if (payerLastPurchase == null && lastApprovedPago != null && lastApprovedPago.getCreacionFecha() != null) {
+                payerLastPurchase = lastApprovedPago.getCreacionFecha().atZone(java.time.ZoneId.of("America/Bogota"))
+                        .format(java.time.format.DateTimeFormatter.ISO_OFFSET_DATE_TIME);
+            }
+        }
+
+        // Fecha de registro del pagador: Proviene estrictamente del registro del
+        // usuario (auth.usuario.creacion_fecha)
+        if (payerRegistrationDate == null && effectiveUsuarioId > 0) {
+            payerRegistrationDate = obtenerFechaRegistroUsuarioAuth(effectiveUsuarioId);
+        }
+
+        // Usuario registrado / prime (Recomendado en Checklist Homologación)
+        if (isPrimeUser == null) {
+            isPrimeUser = (effectiveUsuarioId > 0);
+        }
+
+        // Primera compra online (Recomendado en Checklist Homologación)
+        if (isFirstPurchaseOnline == null) {
+            isFirstPurchaseOnline = (effectiveUsuarioId <= 0);
+        }
+
+        String authenticationType = null;
+        if (request.getAdditionalInfo() != null && request.getAdditionalInfo().getPayer() != null
+                && request.getAdditionalInfo().getPayer().getAuthenticationType() != null) {
+            authenticationType = request.getAdditionalInfo().getPayer().getAuthenticationType().trim();
+        } else if (request.getPayer() != null && request.getPayer().getAuthenticationType() != null) {
+            authenticationType = request.getPayer().getAuthenticationType().trim();
+        } else if (request.getExtraParams() != null && request.getExtraParams().get("authentication_type") != null) {
+            authenticationType = String.valueOf(request.getExtraParams().get("authentication_type")).trim();
+        } else if (request.getExtraParams() != null && request.getExtraParams().get("authenticationType") != null) {
+            authenticationType = String.valueOf(request.getExtraParams().get("authenticationType")).trim();
+        } else if (userInfo != null && userInfo.getSsoProvider() != null && !userInfo.getSsoProvider().isBlank()) {
+            authenticationType = userInfo.getSsoProvider().trim();
+        }
+
+        // Mercado Pago Orders API exige para 'payer.authentication_type' uno de los
+        // valores enum: 'MOBILE' o 'WEB'
+        String normalizedAuthType = "WEB";
+        if (authenticationType != null && !authenticationType.isBlank()) {
+            String upper = authenticationType.toUpperCase();
+            if (upper.contains("MOBILE") || upper.contains("APP") || upper.contains("ANDROID")
+                    || upper.contains("IOS")) {
+                normalizedAuthType = "MOBILE";
+            } else {
+                normalizedAuthType = "WEB";
+            }
+        }
+
+        String clientIp = null;
+        if (request.getAdditionalInfo() != null && request.getAdditionalInfo().getIpAddress() != null) {
+            clientIp = request.getAdditionalInfo().getIpAddress().trim();
+        } else if (request.getExtraParams() != null && request.getExtraParams().get("ip_address") != null) {
+            clientIp = String.valueOf(request.getExtraParams().get("ip_address")).trim();
+        } else if (request.getExtraParams() != null && request.getExtraParams().get("ipAddress") != null) {
+            clientIp = String.valueOf(request.getExtraParams().get("ipAddress")).trim();
+        }
+
+        // Construir additional_info según el esquema estricto de Mercado Pago Orders
+        // API (v1/orders)
+        // Solo permite propiedades planas como 'payer.registration_date',
+        // 'payer.authentication_type', etc.
+        Map<String, Object> additionalInfo = new LinkedHashMap<>();
+        if (payerRegistrationDate != null && !payerRegistrationDate.isBlank()) {
+            additionalInfo.put("payer.registration_date", payerRegistrationDate);
+        }
+        additionalInfo.put("payer.authentication_type", normalizedAuthType);
+        additionalInfo.put("payer.is_prime_user", isPrimeUser != null ? isPrimeUser : false);
+        additionalInfo.put("payer.is_first_purchase_online",
+                isFirstPurchaseOnline != null ? isFirstPurchaseOnline : true);
+        if (payerLastPurchase != null && !payerLastPurchase.isBlank()) {
+            additionalInfo.put("payer.last_purchase", payerLastPurchase);
+        }
+        String sanitizedIp = sanitizeIpAddress(clientIp);
+        if (sanitizedIp != null) {
+            additionalInfo.put("payer.ip_address", sanitizedIp);
+        }
+
         MpOrderRequest orderReq = MpOrderRequest.builder()
                 .type("online")
                 .processingMode("manual")
-                .captureMode("automatic_async")
+                .captureMode("automatic")
                 .externalReference(referenciaPago)
                 .totalAmount(formattedTotalAmount)
                 .description(request.getDescription() != null ? request.getDescription()
                         : "Pago Pedido " + request.getPedidoId() + " DAVIarena")
                 .items(mpItems)
                 .payer(payer)
+                .additionalInfo(additionalInfo.isEmpty() ? null : additionalInfo)
                 .config(config)
                 .build();
 
@@ -537,105 +926,195 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
     public PaymentStatusResponse queryOrderByPedidoId(Long pedidoId, String arenaId, Long usuarioId) {
         List<PedidoPago> pagos = pedidoPagoRepository.findByPedidoId(pedidoId);
         if (pagos.isEmpty()) {
-            throw new ResourceNotFoundException("No se encontrÃƒÂ³ registro de pago para el pedido " + pedidoId);
+            throw new ResourceNotFoundException("No se encontró registro de pago para el pedido " + pedidoId);
         }
-        PedidoPago masReciente = pagos.get(pagos.size() - 1);
-        return syncAndMapOrderStatus(masReciente, arenaId, usuarioId);
+        PaymentStatusResponse lastResponse = null;
+        for (PedidoPago p : pagos) {
+            if (p.getEstadoId() != null && (p.getEstadoId() == PedidoPago.ESTADO_INICIADO || p.getEstadoId() == 1)) {
+                lastResponse = syncAndMapOrderStatus(p, arenaId, usuarioId);
+            }
+        }
+        if (lastResponse == null) {
+            PedidoPago masReciente = pagos.get(pagos.size() - 1);
+            lastResponse = syncAndMapOrderStatus(masReciente, arenaId, usuarioId);
+        }
+        return lastResponse;
     }
 
     private PaymentStatusResponse syncAndMapOrderStatus(PedidoPago pedidoPago, String arenaId, Long usuarioId) {
         String resolvedMedioPago = null;
         String resolvedTerminal = "MERCADOPAGO";
 
-        // 1. Si cuenta con mpOrderId (flujo principal de Mercado Pago Orders / Checkout
-        // Pro), consultar orden directamente
-        if (pedidoPago.getMpOrderId() != null && !pedidoPago.getMpOrderId().isBlank()) {
-            try {
-                MpOrderResponse mpOrder = mercadoPagoClient.getOrder(pedidoPago.getMpOrderId(), arenaId, usuarioId);
-                if (mpOrder != null) {
-                    resolvedTerminal = mpOrder.resolveTerminalCode();
-                    String status = mpOrder.getStatus();
-                    String statusDetail = mpOrder.getStatusDetail();
-                    pedidoPago.setActionCode(status);
-                    pedidoPago.setActionCodeDescription(statusDetail);
+        // Cortocircuito defensivo: si el pago ya está aprobado o reversado en base de
+        // datos, evitar
+        // llamadas síncronas a Mercado Pago
+        boolean yaAprobado = Integer.valueOf(2).equals(pedidoPago.getEstadoId())
+                || Integer.valueOf(PedidoPago.ESTADO_APROBADO).equals(pedidoPago.getEstadoId())
+                || Integer.valueOf(PedidoPago.ESTADO_REVERSADO).equals(pedidoPago.getEstadoId());
 
-                    var firstPayment = mpOrder.getFirstPayment();
-                    if (firstPayment != null) {
-                        // Preservar payment ID si ya está aprobado para no sobreescribir con pagos
-                        // fallidos secundarios
-                        if (pedidoPago.getMpPaymentId() == null
-                                || !Integer.valueOf(2).equals(pedidoPago.getEstadoId())) {
-                            pedidoPago.setMpPaymentId(firstPayment.getId());
+        // Throttle ligero por pedidoPagoId para evitar tormentas de polling hacia
+        // Mercado Pago
+        // en eventos masivos (el Webhook actualiza la BD inmediatamente al recibir
+        // confirmación)
+        boolean enCooldown = false;
+        Long pagoIdKey = pedidoPago.getId();
+        if (!yaAprobado && pagoIdKey != null) {
+            long nowMs = System.currentTimeMillis();
+            Long lastSyncMs = lastExternalSyncByPagoId.get(pagoIdKey);
+            if (lastSyncMs != null && (nowMs - lastSyncMs) < EXTERNAL_SYNC_COOLDOWN_MS) {
+                enCooldown = true;
+                log.debug("[MercadoPagoServiceImpl] Omitiendo consulta externa por cooldown ({}ms) para pagoId={}",
+                        (nowMs - lastSyncMs), pagoIdKey);
+            } else {
+                if (lastExternalSyncByPagoId.size() >= MAX_SYNC_CACHE_ENTRIES) {
+                    lastExternalSyncByPagoId.clear();
+                }
+                lastExternalSyncByPagoId.put(pagoIdKey, nowMs);
+            }
+        }
+
+        if (!yaAprobado && !enCooldown) {
+            boolean sincronizado = false;
+
+            // 1. Si cuenta con mpOrderId (flujo principal de Mercado Pago Orders / Checkout
+            // Pro), consultar orden directamente
+            if (pedidoPago.getMpOrderId() != null && !pedidoPago.getMpOrderId().isBlank()) {
+                try {
+                    MpOrderResponse mpOrder = mercadoPagoClient.getOrder(pedidoPago.getMpOrderId(), arenaId, usuarioId);
+                    if (mpOrder != null) {
+                        resolvedTerminal = mpOrder.resolveTerminalCode();
+                        String status = mpOrder.getStatus();
+                        String statusDetail = mpOrder.getStatusDetail();
+
+                        var firstPayment = mpOrder.getFirstPayment();
+                        String evalStatus = status;
+                        String evalStatusDetail = statusDetail;
+
+                        if (firstPayment != null) {
+                            if (pedidoPago.getMpPaymentId() == null
+                                    || !Integer.valueOf(2).equals(pedidoPago.getEstadoId())) {
+                                pedidoPago.setMpPaymentId(firstPayment.getId());
+                            }
+                            String authCode = firstPayment.resolveAuthorizationCode();
+                            if (authCode != null && !authCode.isBlank()) {
+                                pedidoPago.setAuthCode(authCode);
+                            }
+                            resolvedMedioPago = firstPayment.resolveFriendlyPaymentName();
+                            if (firstPayment.getStatus() != null && !firstPayment.getStatus().isBlank()) {
+                                evalStatus = firstPayment.getStatus();
+                            }
+                            if (firstPayment.getStatusDetail() != null && !firstPayment.getStatusDetail().isBlank()) {
+                                evalStatusDetail = firstPayment.getStatusDetail();
+                            }
                         }
-                        String authCode = firstPayment.resolveAuthorizationCode();
+
+                        pedidoPago.setActionCode(evalStatus);
+                        pedidoPago.setActionCodeDescription(evalStatusDetail);
+
+                        int newEstadoId = mapMpStatusToEstadoId(evalStatus, evalStatusDetail);
+                        if (newEstadoId == PedidoPago.ESTADO_APROBADO) {
+                            BigDecimal mpAmount = (firstPayment != null && firstPayment.getPaidAmount() != null)
+                                    ? firstPayment.getPaidAmount()
+                                    : (firstPayment != null && firstPayment.getAmount() != null
+                                            ? firstPayment.getAmount()
+                                            : mpOrder.getTotalAmount());
+                            validatePaymentIntegrity(pedidoPago, mpAmount, mpOrder.getCurrencyId(),
+                                    mpOrder.getExternalReference(), "v1/orders:" + pedidoPago.getMpOrderId());
+                        }
+                        applyStateTransition(pedidoPago, newEstadoId, evalStatus, evalStatusDetail, resolvedMedioPago,
+                                resolvedTerminal);
+
+                        if (Integer.valueOf(PedidoPago.ESTADO_APROBADO).equals(pedidoPago.getEstadoId())
+                                || Integer.valueOf(2).equals(pedidoPago.getEstadoId())) {
+                            sincronizado = true;
+                        }
+                    }
+                } catch (Exception ex) {
+                    log.warn("[MercadoPagoServiceImpl] Consulta a v1/orders {} no aplicable o fallida: {}",
+                            pedidoPago.getMpOrderId(), ex.getMessage());
+                }
+            }
+
+            // 2. Si aún no está aprobado y cuenta con mpPaymentId (notificaciones directas
+            // de pago o tokenización)
+            if (!sincronizado && pedidoPago.getMpPaymentId() != null && !pedidoPago.getMpPaymentId().isBlank()) {
+                try {
+                    MpPaymentDetailResponse paymentDetail = mercadoPagoClient.getPayment(pedidoPago.getMpPaymentId(),
+                            arenaId, usuarioId);
+                    if (paymentDetail != null) {
+                        pedidoPago.setActionCode(paymentDetail.getStatus());
+                        pedidoPago.setActionCodeDescription(paymentDetail.getStatusDetail());
+                        String authCode = paymentDetail.resolveAuthorizationCode();
                         if (authCode != null && !authCode.isBlank()) {
                             pedidoPago.setAuthCode(authCode);
                         }
-                        resolvedMedioPago = firstPayment.resolveFriendlyPaymentName();
-                    } else if (mpOrder.getId() != null && !mpOrder.getId().isBlank()) {
-                        pedidoPago.setAuthCode(mpOrder.getId());
-                    }
+                        resolvedMedioPago = paymentDetail.resolveFriendlyPaymentName();
 
-                    int newEstadoId = mapMpStatusToEstadoId(status, statusDetail);
-                    applyStateTransition(pedidoPago, newEstadoId, status, statusDetail, resolvedMedioPago,
-                            resolvedTerminal);
+                        int newEstadoId = mapMpStatusToEstadoId(paymentDetail.getStatus(),
+                                paymentDetail.getStatusDetail());
+                        if (newEstadoId == PedidoPago.ESTADO_APROBADO) {
+                            validatePaymentIntegrity(pedidoPago, paymentDetail.getTransactionAmount(),
+                                    paymentDetail.getCurrencyId(), paymentDetail.getExternalReference(),
+                                    "v1/payments:" + pedidoPago.getMpPaymentId());
+                        }
+                        applyStateTransition(pedidoPago, newEstadoId, paymentDetail.getStatus(),
+                                paymentDetail.getStatusDetail(), resolvedMedioPago);
+
+                        if (Integer.valueOf(PedidoPago.ESTADO_APROBADO).equals(pedidoPago.getEstadoId())
+                                || Integer.valueOf(2).equals(pedidoPago.getEstadoId())) {
+                            sincronizado = true;
+                        }
+                    }
+                } catch (Exception ex) {
+                    log.warn("[MercadoPagoServiceImpl] Error consultando pago {}: {}", pedidoPago.getMpPaymentId(),
+                            ex.getMessage());
                 }
-            } catch (Exception ex) {
-                log.debug("[MercadoPagoServiceImpl] Consulta a v1/orders {} no aplicable: {}",
-                        pedidoPago.getMpOrderId(), ex.getMessage());
             }
-        } else if (pedidoPago.getMpPaymentId() != null && !pedidoPago.getMpPaymentId().isBlank()) {
-            // 2. Si cuenta con mpPaymentId (notificaciones directas de pago o tokenización)
-            try {
-                MpPaymentDetailResponse paymentDetail = mercadoPagoClient.getPayment(pedidoPago.getMpPaymentId(),
-                        arenaId, usuarioId);
-                if (paymentDetail != null) {
-                    pedidoPago.setActionCode(paymentDetail.getStatus());
-                    pedidoPago.setActionCodeDescription(paymentDetail.getStatusDetail());
-                    String authCode = paymentDetail.resolveAuthorizationCode();
-                    if (authCode != null && !authCode.isBlank()) {
-                        pedidoPago.setAuthCode(authCode);
-                    }
-                    resolvedMedioPago = paymentDetail.resolveFriendlyPaymentName();
 
-                    int newEstadoId = mapMpStatusToEstadoId(paymentDetail.getStatus(), paymentDetail.getStatusDetail());
-                    applyStateTransition(pedidoPago, newEstadoId, paymentDetail.getStatus(),
-                            paymentDetail.getStatusDetail(), resolvedMedioPago);
-                }
-            } catch (Exception ex) {
-                log.warn("[MercadoPagoServiceImpl] Error consultando pago {}: {}", pedidoPago.getMpPaymentId(),
-                        ex.getMessage());
-            }
-        } else if (pedidoPago.getReferenciaPago() != null && !pedidoPago.getReferenciaPago().isBlank()) {
-            // 3. Fallback únicamente si NO cuenta con mpOrderId ni mpPaymentId
-            try {
-                List<MpPaymentDetailResponse> payments = mercadoPagoClient
-                        .searchPaymentByExternalReference(pedidoPago.getReferenciaPago(), arenaId, usuarioId);
-                if (!payments.isEmpty()) {
-                    MpPaymentDetailResponse p = payments.get(payments.size() - 1);
-                    if (pedidoPago.getMpPaymentId() == null || !Integer.valueOf(2).equals(pedidoPago.getEstadoId())) {
-                        pedidoPago.setMpPaymentId(p.getId());
-                    }
-                    pedidoPago.setActionCode(p.getStatus());
-                    pedidoPago.setActionCodeDescription(p.getStatusDetail());
-                    String authCode = p.resolveAuthorizationCode();
-                    if (authCode != null && !authCode.isBlank()) {
-                        pedidoPago.setAuthCode(authCode);
-                    }
-                    resolvedMedioPago = p.resolveFriendlyPaymentName();
+            // 3. Fallback fundamental: buscar pago por referencia externa de Mercado Pago
+            // (MP-ORD-...)
+            if (!sincronizado && pedidoPago.getReferenciaPago() != null && !pedidoPago.getReferenciaPago().isBlank()) {
+                try {
+                    List<MpPaymentDetailResponse> payments = mercadoPagoClient
+                            .searchPaymentByExternalReference(pedidoPago.getReferenciaPago(), arenaId, usuarioId);
+                    if (!payments.isEmpty()) {
+                        MpPaymentDetailResponse p = payments.get(payments.size() - 1);
+                        if (pedidoPago.getMpPaymentId() == null
+                                || !Integer.valueOf(2).equals(pedidoPago.getEstadoId())) {
+                            pedidoPago.setMpPaymentId(p.getId());
+                        }
+                        pedidoPago.setActionCode(p.getStatus());
+                        pedidoPago.setActionCodeDescription(p.getStatusDetail());
+                        String authCode = p.resolveAuthorizationCode();
+                        if (authCode != null && !authCode.isBlank()) {
+                            pedidoPago.setAuthCode(authCode);
+                        }
+                        resolvedMedioPago = p.resolveFriendlyPaymentName();
 
-                    int newEstadoId = mapMpStatusToEstadoId(p.getStatus(), p.getStatusDetail());
-                    applyStateTransition(pedidoPago, newEstadoId, p.getStatus(), p.getStatusDetail(),
-                            resolvedMedioPago);
+                        int newEstadoId = mapMpStatusToEstadoId(p.getStatus(), p.getStatusDetail());
+                        if (newEstadoId == PedidoPago.ESTADO_APROBADO) {
+                            validatePaymentIntegrity(pedidoPago, p.getTransactionAmount(), p.getCurrencyId(),
+                                    p.getExternalReference(), "v1/payments/search:" + p.getId());
+                        }
+                        applyStateTransition(pedidoPago, newEstadoId, p.getStatus(), p.getStatusDetail(),
+                                resolvedMedioPago);
+                    }
+                } catch (Exception ex) {
+                    log.warn("[MercadoPagoServiceImpl] Error buscando pago por referencia {}: {}",
+                            pedidoPago.getReferenciaPago(), ex.getMessage());
                 }
-            } catch (Exception ex) {
-                log.warn("[MercadoPagoServiceImpl] Error buscando pago por referencia {}: {}",
-                        pedidoPago.getReferenciaPago(), ex.getMessage());
             }
         }
 
         if (resolvedMedioPago == null || resolvedMedioPago.isBlank()) {
-            resolvedMedioPago = "Tarjeta de crédito o débito";
+            String descLower = pedidoPago.getActionCodeDescription() != null
+                    ? pedidoPago.getActionCodeDescription().toLowerCase()
+                    : "";
+            if (descLower.contains("transfer") || descLower.contains("pse")) {
+                resolvedMedioPago = "PSE / Transferencia bancaria";
+            } else {
+                resolvedMedioPago = "Tarjeta de crédito o débito";
+            }
         }
 
         String resolvedAuth = pedidoPago.getAuthCode();
@@ -675,7 +1154,8 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
         String referenciaPago = "MP-REC-" + System.currentTimeMillis() + "-"
                 + UUID.randomUUID().toString().substring(0, 6).toUpperCase();
 
-        // 1. Buscar la tarjeta tokenizada guardada
+        // 1. Buscar la tarjeta tokenizada guardada (Aislamiento estricto por usuario -
+        // CRIT-05)
         TarjetaClientePago tarjeta = null;
         if (request.getBindingId().matches("\\d+")) {
             Long cardId = Long.valueOf(request.getBindingId());
@@ -687,11 +1167,13 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
         if (tarjeta == null) {
             tarjeta = tarjetaClientePagoRepository.findByMpCardId(request.getBindingId())
                     .or(() -> tarjetaClientePagoRepository.findByMpPaymentProfileId(request.getBindingId()))
+                    .filter(t -> t.getClientePago() != null && usuarioId.equals(t.getClientePago().getArenaUsuarioId()))
                     .orElse(null);
         }
         if (tarjeta == null) {
             throw new PaymentException(
-                    "No se encontrÃƒÂ³ la tarjeta asociada con el identificador: " + request.getBindingId());
+                    "No se encontró la tarjeta asociada o no pertenece al usuario autenticado: "
+                            + request.getBindingId());
         }
 
         ClientePago cliente = tarjeta.getClientePago();
@@ -713,6 +1195,93 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
         GrupoPagoUsuario grupoPagoUsuario = request.getGrupoPagoUsuarioId() != null
                 ? grupoPagoUsuarioRepository.findById(request.getGrupoPagoUsuarioId()).orElse(null)
                 : null;
+
+        // BU-03 / CRIT-04: Validación estricta y sincronización del monto contra
+        // Ordering en payWithToken (Fail-Closed)
+        if (request.getPedidoId() != null) {
+            PedidoClientResponse pedidoInfo;
+            try {
+                pedidoInfo = orderingClient.getPedido(request.getPedidoId(), null)
+                        .orElseThrow(() -> new PaymentException(
+                                "Pedido #" + request.getPedidoId() + " no encontrado en el servicio de órdenes."));
+            } catch (PaymentException pe) {
+                throw pe;
+            } catch (Exception ex) {
+                log.error("[BU-03] Error consultando Ordering para pedido #{}: {}", request.getPedidoId(),
+                        ex.getMessage());
+                throw new PaymentException("El servicio de órdenes no está disponible. No se puede iniciar el pago.");
+            }
+
+            if (pedidoInfo.getValorTotal() == null || pedidoInfo.getValorTotal().compareTo(BigDecimal.ZERO) <= 0) {
+                throw new PaymentException("El pedido no tiene un monto válido para pago.");
+            }
+
+            if (request.getGrupoPagoUsuarioId() == null) {
+                if (pedidoInfo.getUsuarioId() != null && !pedidoInfo.getUsuarioId().equals(usuarioId)) {
+                    throw new PaymentException("El pedido no pertenece al usuario autenticado");
+                }
+                BigDecimal valorTotalOficial = calcularValorTotalOficial(pedidoInfo, request.getPedidoIds());
+                if (request.getMonto() != null && request.getMonto().compareTo(valorTotalOficial) != 0) {
+                    log.warn(
+                            "[BU-03] Monto manipulado por el cliente en MP payWithToken ({}). Reemplazado por oficial: {}",
+                            request.getMonto(), valorTotalOficial);
+                }
+                request.setMonto(valorTotalOficial);
+            } else {
+                if (grupoPagoUsuario == null) {
+                    throw new PaymentException("La cuota de pago grupal especificada no existe.");
+                }
+                GrupoPago gp = grupoPagoUsuario.getGrupoPago();
+                if (gp != null && gp.getPedidoId() != null
+                        && !request.getPedidoId().equals(gp.getPedidoId())) {
+                    boolean pedidoAsociado = grupoPagoPedidoRepository.existsByGrupoPagoIdAndPedidoId(gp.getId(),
+                            request.getPedidoId());
+                    if (!pedidoAsociado) {
+                        throw new PaymentException("La cuota de pago grupal no corresponde al pedido indicado.");
+                    }
+                }
+                if (grupoPagoUsuario.getUsuarioId() != null
+                        && !grupoPagoUsuario.getUsuarioId().equals(0L)
+                        && !grupoPagoUsuario.getUsuarioId().equals(usuarioId)) {
+                    throw new PaymentException("La cuota de pago grupal no pertenece al usuario autenticado");
+                }
+
+                boolean esLibre = gp != null && "LIBRE_PAGO".equalsIgnoreCase(gp.getModalidadDivision());
+
+                if (esLibre || grupoPagoUsuario.getMontoAsignado() == null) {
+                    // Modalidad LIBRE APORTE: Respetar el monto que el usuario ingresó
+                    if (request.getMonto() == null || request.getMonto().compareTo(BigDecimal.ZERO) <= 0) {
+                        throw new PaymentException("Debe ingresar un monto válido a aportar.");
+                    }
+                    if (gp != null && gp.getSaldoPendiente() != null
+                            && request.getMonto().compareTo(gp.getSaldoPendiente()) > 0) {
+                        throw new PaymentException("El monto a aportar ($" + request.getMonto()
+                                + ") supera el saldo pendiente del grupo ($" + gp.getSaldoPendiente() + ").");
+                    }
+                    // request.getMonto() se mantiene intacto sin ser alterado
+                } else {
+                    // Modalidad POR PARTES IGUALES: Cuota fija preasignada
+                    BigDecimal asignado = grupoPagoUsuario.getMontoAsignado();
+                    BigDecimal pagado = grupoPagoUsuario.getMontoPagado() != null
+                            ? grupoPagoUsuario.getMontoPagado()
+                            : BigDecimal.ZERO;
+                    BigDecimal saldoCuota = asignado.subtract(pagado);
+                    if (saldoCuota.compareTo(BigDecimal.ZERO) <= 0) {
+                        if (gp != null && gp.getSaldoPendiente() != null
+                                && gp.getSaldoPendiente().compareTo(BigDecimal.ZERO) > 0) {
+                            saldoCuota = gp.getSaldoPendiente();
+                        } else {
+                            throw new PaymentException("La cuota de pago grupal ya se encuentra saldada.");
+                        }
+                    }
+                    if (gp != null && gp.getSaldoPendiente() != null
+                            && saldoCuota.compareTo(gp.getSaldoPendiente()) > 0) {
+                        saldoCuota = gp.getSaldoPendiente();
+                    }
+                    request.setMonto(saldoCuota);
+                }
+            }
+        }
 
         // 3. Crear registro PedidoPago local
         PedidoPago pedidoPago = PedidoPago.builder()
@@ -989,11 +1558,19 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
         log.info("[MercadoPago Webhook] Recibido payload: {}, xSignature={}, xRequestId={}, dataId={}",
                 rawBody, xSignature, xRequestId, dataId);
 
-        // 1. Validar firma HMAC SHA-256 si viene configurada
+        // 1. Validar firma HMAC SHA-256 obligatoria (Fail-Closed: C-01)
         String secret = mercadoPagoProperties.getWebhookSecret();
-        if (secret != null && !secret.isBlank() && xSignature != null && xRequestId != null) {
-            validateWebhookSignature(secret, rawBody, xSignature, xRequestId, dataId);
+        if (secret == null || secret.isBlank()) {
+            log.error(
+                    "[MercadoPago Webhook] Webhook secret no configurado; rechazando notificación por seguridad (Fail-Closed)");
+            throw new UnauthorizedException("Webhook secret de Mercado Pago no configurado");
         }
+        if (xSignature == null || xSignature.isBlank() || xRequestId == null || xRequestId.isBlank()) {
+            log.error("[MercadoPago Webhook] Headers de firma ausentes (x-signature={}, x-request-id={})",
+                    xSignature, xRequestId);
+            throw new UnauthorizedException("Headers de autenticación x-signature y x-request-id son obligatorios");
+        }
+        validateWebhookSignature(secret, rawBody, xSignature, xRequestId, dataId);
 
         // 2. Extraer ID de la orden o pago
         String orderId = dataId;
@@ -1109,8 +1686,22 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
             String ts = parts.get("ts");
             String receivedSignature = parts.get("v1");
             if (ts == null || receivedSignature == null) {
-                log.warn("[MercadoPago Webhook] x-signature invÃƒÂ¡lido o incompleto");
-                return;
+                log.error("[MercadoPago Webhook] x-signature inválido o incompleto");
+                throw new UnauthorizedException("Header x-signature incompleto o inválido en webhook");
+            }
+
+            // Ventana anti-replay de 5 minutos
+            try {
+                long tsSeconds = Long.parseLong(ts);
+                long nowSeconds = System.currentTimeMillis() / 1000;
+                if (Math.abs(nowSeconds - tsSeconds) > 300) {
+                    log.error("[MercadoPago Webhook] Timestamp x-signature desfasado (ts: {}, actual: {})", ts,
+                            nowSeconds);
+                    throw new UnauthorizedException("Timestamp x-signature fuera de la ventana de validez permitida");
+                }
+            } catch (NumberFormatException nfe) {
+                log.error("[MercadoPago Webhook] Timestamp inválido en x-signature: {}", ts);
+                throw new UnauthorizedException("Timestamp numérico requerido en x-signature");
             }
 
             String resolvedId = dataId != null ? dataId : "";
@@ -1124,12 +1715,49 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
             String manifest = "id:" + resolvedId.toLowerCase() + ";request-id:" + xRequestId + ";ts:" + ts + ";";
             boolean valid = hmacSignatureService.verifySignature(secret, manifest, receivedSignature);
             if (!valid) {
-                log.warn("[MercadoPago Webhook] Firma HMAC SHA256 no coincidiÃƒÂ³ con el secreto");
+                log.error("[MercadoPago Webhook] Firma HMAC SHA256 no coincidió con el secreto");
+                throw new UnauthorizedException("Firma HMAC SHA-256 no coincide con el webhook recibido");
             } else {
                 log.info("[MercadoPago Webhook] Firma HMAC SHA256 verificada exitosamente");
             }
+        } catch (UnauthorizedException ue) {
+            throw ue;
         } catch (Exception ex) {
-            log.warn("[MercadoPago Webhook] ExcepciÃƒÂ³n verificando firma de webhook: {}", ex.getMessage());
+            log.error("[MercadoPago Webhook] Excepción verificando firma de webhook: {}", ex.getMessage());
+            throw new UnauthorizedException("Error validando firma HMAC del webhook: " + ex.getMessage());
+        }
+    }
+
+    /**
+     * C-01: Verifica integridad del pago reportado por Mercado Pago antes de
+     * aprobar el PedidoPago local.
+     * Valida relación pago-pedido (external_reference), monto cobrado (>= monto
+     * esperado) y moneda.
+     */
+    private void validatePaymentIntegrity(PedidoPago pedidoPago, BigDecimal mpAmount, String mpCurrency,
+            String mpExternalRef, String source) {
+        if (mpExternalRef != null && !mpExternalRef.isBlank()
+                && pedidoPago.getReferenciaPago() != null && !pedidoPago.getReferenciaPago().isBlank()
+                && !mpExternalRef.trim().equals(pedidoPago.getReferenciaPago().trim())) {
+            log.error(
+                    "[C-01][MercadoPago] Referencia externa no coincide para PedidoPago #{}: esperada={}, recibida={}, source={}",
+                    pedidoPago.getId(), pedidoPago.getReferenciaPago(), mpExternalRef, source);
+            throw new PaymentException("La referencia externa del pago no corresponde al pedido");
+        }
+
+        if (mpAmount != null && pedidoPago.getMonto() != null
+                && mpAmount.compareTo(pedidoPago.getMonto()) < 0) {
+            log.error("[C-01][MercadoPago] Monto insuficiente para PedidoPago #{}: esperado={}, pagado={}, source={}",
+                    pedidoPago.getId(), pedidoPago.getMonto(), mpAmount, source);
+            throw new PaymentException("El monto pagado en Mercado Pago es inferior al monto del pedido");
+        }
+
+        if (mpCurrency != null && !mpCurrency.isBlank()
+                && pedidoPago.getMoneda() != null && !pedidoPago.getMoneda().isBlank()
+                && !mpCurrency.trim().equalsIgnoreCase(pedidoPago.getMoneda().trim())) {
+            log.error("[C-01][MercadoPago] Moneda no coincide para PedidoPago #{}: esperada={}, recibida={}, source={}",
+                    pedidoPago.getId(), pedidoPago.getMoneda(), mpCurrency, source);
+            throw new PaymentException("La moneda del pago en Mercado Pago no coincide con la del pedido");
         }
     }
 
@@ -1216,7 +1844,8 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
         if ("refunded".equals(s) || "charged_back".equals(s) || "partially_refunded".equals(d)) {
             return PedidoPago.ESTADO_REVERSADO; // 25: Reversado / Reembolsado (Flujo 5)
         }
-        if ("approved".equals(s) || "processed".equals(s) || "accredited".equals(s)) {
+        if ("approved".equals(s) || "processed".equals(s) || "accredited".equals(s) || "accredited".equals(d)
+                || ("closed".equals(s) && (d.contains("approved") || d.contains("accredited") || d.contains("paid")))) {
             return PedidoPago.ESTADO_APROBADO; // 23: Aprobado (Flujo 5)
         }
         if ("rejected".equals(s) || "failed".equals(s)) {
@@ -1295,15 +1924,18 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
                 log.warn("No se pudo notificar reembolso a Ordering para pedido #{}: {}", pedidoPago.getPedidoId(),
                         ex.getMessage());
             }
+            notificarCambioEstado(pedidoPago, PedidoPago.ESTADO_REVERSADO, "Pago Reembolsado", statusDetail);
         } else if (newEstadoId == PedidoPago.ESTADO_RECHAZADO || newEstadoId == 3) {
             pedidoPago.setEstadoId(PedidoPago.ESTADO_RECHAZADO);
             pedidoPago.setErrorMessage(statusDetail != null ? statusDetail : "Pago rechazado por Mercado Pago");
             pedidoPagoRepository.save(pedidoPago);
+            notificarCambioEstado(pedidoPago, PedidoPago.ESTADO_RECHAZADO, "Pago Rechazado", statusDetail);
         } else if (newEstadoId == PedidoPago.ESTADO_ANULADO || newEstadoId == 5) {
             pedidoPago.setEstadoId(PedidoPago.ESTADO_ANULADO);
             pedidoPago
                     .setErrorMessage(statusDetail != null ? statusDetail : "Pago cancelado o anulado por Mercado Pago");
             pedidoPagoRepository.save(pedidoPago);
+            notificarCambioEstado(pedidoPago, PedidoPago.ESTADO_ANULADO, "Pago Cancelado", statusDetail);
         } else {
             // PedidoPago.ESTADO_INICIADO (22)
             pedidoPago.setEstadoId(PedidoPago.ESTADO_INICIADO);
@@ -1361,14 +1993,22 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
 
                 BigDecimal valorTotal = gp.getValorTotal() != null ? gp.getValorTotal() : BigDecimal.ZERO;
                 BigDecimal nuevoSaldo = valorTotal.subtract(nuevoTotalPagado).max(BigDecimal.ZERO);
+
+                // Tolerancia para centavos o pesos residuales por redondeo de cuotas (COP: <=
+                // $1.00)
+                BigDecimal TOLERANCIA_REDONDEO = new BigDecimal("1.00");
+                if (nuevoSaldo.compareTo(TOLERANCIA_REDONDEO) <= 0) {
+                    nuevoSaldo = BigDecimal.ZERO;
+                }
                 gp.setSaldoPendiente(nuevoSaldo);
 
                 if (nuevoSaldo.compareTo(BigDecimal.ZERO) <= 0) {
                     gp.setEstadoId(2);
-                    String msg = "Vaca/Pago grupal 100% completado con Mercado Pago (" + detailMessage + ")";
+                    String msg = "Pago grupal 100% completado con Mercado Pago (" + detailMessage + ")";
+                    String authCodeFinal = gp.getCodigoUnico() != null ? gp.getCodigoUnico() : effectiveAuth;
                     orderingClient.updateOrderStatus(pedidoPago.getPedidoId(), PedidoPago.ESTADO_APROBADO, msg, null,
-                            effectiveAuth, terminal,
-                            pedidoPago.getMonto(), effectivePaymentMethod);
+                            authCodeFinal, terminal,
+                            gp.getValorTotal(), effectivePaymentMethod);
                     if (notificationServiceClient != null) {
                         try {
                             notificationServiceClient.notificarVacaCompletada(
@@ -1387,10 +2027,82 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
                 grupoPagoRepository.save(gp);
             }
         } else {
+            // BU-03: Validar que el monto aprobado por la pasarela coincida con el del
+            // pedido antes de marcarlo como pagado
+            if (pedidoPago.getPedidoId() != null && pedidoPago.getGrupoPagoUsuario() == null) {
+                try {
+                    PedidoClientResponse pedidoReal = orderingClient.getPedido(pedidoPago.getPedidoId(), null)
+                            .orElse(null);
+                    if (pedidoReal != null && pedidoReal.getValorTotal() != null) {
+                        if (pedidoPago.getMonto() == null
+                                || pedidoPago.getMonto().compareTo(pedidoReal.getValorTotal()) < 0) {
+                            log.error(
+                                    "[BU-03] Discrepancia de monto en webhook MP: pagado={} vs pedido={}. NO se confirma a Ordering.",
+                                    pedidoPago.getMonto(), pedidoReal.getValorTotal());
+                            pedidoPago.setEstadoId(PedidoPago.ESTADO_RECHAZADO);
+                            pedidoPagoRepository.save(pedidoPago);
+                            return;
+                        }
+                    }
+                } catch (PaymentException pe) {
+                    throw pe;
+                } catch (Exception ex) {
+                    log.error("[BU-03] Error revalidando monto con Ordering en webhook MP: {}", ex.getMessage());
+                    throw new PaymentException(
+                            "Error validando la integridad del monto del pedido con el servicio de órdenes");
+                }
+            }
+
             // Notificar a Ordering (estado 23: Aprobado / Pagado)
             orderingClient.updateOrderStatus(pedidoPago.getPedidoId(), PedidoPago.ESTADO_APROBADO, detailMessage, null,
                     effectiveAuth, terminal,
                     pedidoPago.getMonto(), effectivePaymentMethod);
+        }
+
+        // Notificar en tiempo real por WebSocket/Redis el pago aprobado
+        notificarCambioEstado(pedidoPago, PedidoPago.ESTADO_APROBADO, "Pago Aprobado", detailMessage);
+    }
+
+    private void notificarCambioEstado(PedidoPago pedidoPago, int estadoId, String estadoNombre, String observacion) {
+        if (notificationServiceClient == null || pedidoPago == null)
+            return;
+        try {
+            Long arenaIdLong = 1L;
+            if (pedidoPago.getArenaId() != null && pedidoPago.getArenaId().matches("\\d+")) {
+                arenaIdLong = Long.parseLong(pedidoPago.getArenaId());
+            }
+            GrupoPago gp = pedidoPago.getGrupoPagoUsuario() != null ? pedidoPago.getGrupoPagoUsuario().getGrupoPago()
+                    : null;
+            if (gp == null && pedidoPago.getPedidoId() != null) {
+                gp = grupoPagoRepository.findByPedidoId(pedidoPago.getPedidoId()).orElse(null);
+            }
+            Long grupoId = gp != null ? gp.getId() : null;
+            String codigoUnico = gp != null ? gp.getCodigoUnico() : null;
+
+            List<Long> usuarios = new ArrayList<>();
+            if (pedidoPago.getUsuarioId() != null && pedidoPago.getUsuarioId() > 0)
+                usuarios.add(pedidoPago.getUsuarioId());
+            if (pedidoPago.getGrupoPagoUsuario() != null && pedidoPago.getGrupoPagoUsuario().getUsuarioId() != null
+                    && !usuarios.contains(pedidoPago.getGrupoPagoUsuario().getUsuarioId())) {
+                usuarios.add(pedidoPago.getGrupoPagoUsuario().getUsuarioId());
+            }
+            if (gp != null && gp.getCreacionUsuario() != null && !usuarios.contains(gp.getCreacionUsuario())) {
+                usuarios.add(gp.getCreacionUsuario());
+            }
+            if (gp != null && gp.getId() != null) {
+                List<GrupoPagoUsuario> miembros = grupoPagoUsuarioRepository.findByGrupoPagoId(gp.getId());
+                for (GrupoPagoUsuario m : miembros) {
+                    if (m.getUsuarioId() != null && m.getUsuarioId() > 0 && !usuarios.contains(m.getUsuarioId())) {
+                        usuarios.add(m.getUsuarioId());
+                    }
+                }
+            }
+
+            notificationServiceClient.notificarCambioEstadoPagoMultiple(
+                    arenaIdLong, usuarios, pedidoPago.getPedidoId(), grupoId, codigoUnico,
+                    estadoId, estadoNombre, pedidoPago.getMonto(), observacion);
+        } catch (Exception ex) {
+            log.warn("Error despachando notificación de cambio de estado en MP: {}", ex.getMessage());
         }
     }
 
@@ -1405,5 +2117,253 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
             case 26, 5 -> "ANULADO";
             default -> "ESTADO_" + estadoId;
         };
+    }
+
+    private String sanitizeIpAddress(String ip) {
+        if (ip == null || ip.isBlank() || "unknown".equalsIgnoreCase(ip.trim())) {
+            return null;
+        }
+        String clean = ip.trim();
+        if (clean.contains(",")) {
+            clean = clean.split(",")[0].trim();
+        }
+        if (clean.startsWith("::ffff:")) {
+            clean = clean.substring(7).trim();
+        }
+        if ("::1".equals(clean) || "localhost".equalsIgnoreCase(clean)) {
+            clean = "127.0.0.1";
+        }
+        if (clean.contains(":") && clean.indexOf(':') == clean.lastIndexOf(':')) {
+            clean = clean.substring(0, clean.indexOf(':')).trim();
+        }
+        java.util.regex.Pattern ipv4Pattern = java.util.regex.Pattern.compile(
+                "^((25[0-5]|(2[0-4]|1\\d|[1-9]|)\\d)\\.){3}(25[0-5]|(2[0-4]|1\\d|[1-9]|)\\d)$");
+        if (ipv4Pattern.matcher(clean).matches()) {
+            return clean;
+        }
+        if (clean.length() >= 7 && clean.contains(":") && !clean.contains(" ")) {
+            return clean;
+        }
+        return null;
+    }
+
+    private String sanitizeStreetNumber(String streetNumber, String streetName, String zipCode) {
+        if (streetNumber != null && !streetNumber.isBlank()) {
+            String trimmed = streetNumber.trim();
+            if (trimmed.length() <= 10) {
+                return trimmed;
+            }
+        }
+
+        String source = (streetNumber != null && !streetNumber.isBlank()) ? streetNumber.trim()
+                : (streetName != null && !streetName.isBlank() ? streetName.trim() : null);
+
+        if (source != null && source.length() <= 10) {
+            return source;
+        }
+
+        if (source != null) {
+            java.util.regex.Matcher m = java.util.regex.Pattern
+                    .compile("(?:#|No\\.?|N°)\\s*([A-Za-z0-9\\-]+)", java.util.regex.Pattern.CASE_INSENSITIVE)
+                    .matcher(source);
+            if (m.find()) {
+                String extracted = m.group(1).trim();
+                if (!extracted.isEmpty() && extracted.length() <= 10) {
+                    return extracted;
+                }
+            }
+
+            java.util.regex.Matcher mNum = java.util.regex.Pattern
+                    .compile("\\b\\d+[A-Za-z0-9\\-]*\\b")
+                    .matcher(source);
+            if (mNum.find()) {
+                String num = mNum.group().trim();
+                if (!num.isEmpty() && num.length() <= 10) {
+                    return num;
+                }
+            }
+        }
+
+        if (zipCode != null && !zipCode.isBlank()) {
+            String cleanZip = zipCode.trim();
+            if (cleanZip.length() <= 10) {
+                return cleanZip;
+            }
+        }
+
+        if (source != null) {
+            String trimmed = source.substring(0, Math.min(source.length(), 10)).trim();
+            if (!trimmed.isEmpty()) {
+                return trimmed;
+            }
+        }
+
+        return "110111";
+    }
+
+    private String[] sanitizePhone(String phone, String areaCode) {
+        String cleanArea = (areaCode != null && !areaCode.isBlank()) ? areaCode.replaceAll("\\D", "") : "57";
+        if (cleanArea.isBlank()) {
+            cleanArea = "57";
+        }
+        if (phone == null || phone.isBlank()) {
+            return new String[] { cleanArea, null };
+        }
+        String digits = phone.replaceAll("\\D", "");
+        if (digits.startsWith(cleanArea) && digits.length() > cleanArea.length() + 6) {
+            digits = digits.substring(cleanArea.length());
+        }
+        return new String[] { cleanArea, digits.isBlank() ? null : digits };
+    }
+
+    private String normalizeIdentificationType(String docType, Integer tipoDocId) {
+        if (docType != null && !docType.isBlank()) {
+            String clean = docType.trim().toUpperCase();
+            if ("PP".equals(clean) || "PASAPORTE".equals(clean) || "PASSPORT".equals(clean) || "PA".equals(clean)) {
+                return "PAS";
+            }
+            if ("CC".equals(clean) || "CEDULA".equals(clean) || "CÉDULA".equals(clean) || "1".equals(clean)) {
+                return "CC";
+            }
+            if ("CE".equals(clean) || "CEDULA_EXTRANJERIA".equals(clean) || "EXTRANJERIA".equals(clean)
+                    || "2".equals(clean)) {
+                return "CE";
+            }
+            if ("NIT".equals(clean) || "RUT".equals(clean) || "4".equals(clean)) {
+                return "NIT";
+            }
+            if ("TI".equals(clean) || "TARJETA_IDENTIDAD".equals(clean) || "TARJETA IDENTIDAD".equals(clean)
+                    || "5".equals(clean)) {
+                return "TI";
+            }
+            if ("RC".equals(clean) || "REGISTRO_CIVIL".equals(clean) || "REGISTRO CIVIL".equals(clean)
+                    || "6".equals(clean)) {
+                return "RC";
+            }
+            if ("TE".equals(clean)) {
+                return "TE";
+            }
+            if ("DI".equals(clean) || "DNI".equals(clean)) {
+                return "DI";
+            }
+            if ("OTRO".equals(clean) || "OTHER".equals(clean)) {
+                return "Otro";
+            }
+            // Valores estrictos soportados por Mercado Pago Orders API:
+            // 'CC', 'CE', 'NIT', 'Otro', 'RC', 'TI', 'TE', 'PAS', 'DI'
+            if ("CC".equalsIgnoreCase(clean))
+                return "CC";
+            if ("CE".equalsIgnoreCase(clean))
+                return "CE";
+            if ("NIT".equalsIgnoreCase(clean))
+                return "NIT";
+            if ("RC".equalsIgnoreCase(clean))
+                return "RC";
+            if ("TI".equalsIgnoreCase(clean))
+                return "TI";
+            if ("TE".equalsIgnoreCase(clean))
+                return "TE";
+            if ("PAS".equalsIgnoreCase(clean))
+                return "PAS";
+            if ("DI".equalsIgnoreCase(clean))
+                return "DI";
+            if ("OTRO".equalsIgnoreCase(clean))
+                return "Otro";
+        }
+
+        if (tipoDocId != null) {
+            return switch (tipoDocId) {
+                case 1 -> "CC";
+                case 2 -> "CE";
+                case 3 -> "PAS";
+                case 4 -> "NIT";
+                case 5 -> "TI";
+                case 6 -> "RC";
+                default -> "CC";
+            };
+        }
+
+        return "CC";
+    }
+
+    private String resolveDefaultStatementDescriptor(String arenaId) {
+        if (mercadoPagoProperties.getStatementDescriptor() != null
+                && !mercadoPagoProperties.getStatementDescriptor().isBlank()) {
+            String desc = mercadoPagoProperties.getStatementDescriptor().trim();
+            String lower = desc.toLowerCase();
+            if (lower.contains("daviarena") || lower.contains("daviar")) {
+                return "BiteUp DAVI";
+            }
+            return desc.length() > 13 ? desc.substring(0, 13).trim() : desc;
+        }
+        String arenaName = "DAVI";
+        if (arenaId != null && !arenaId.isBlank()) {
+            if ("2".equals(arenaId.trim()) || "movistar".equalsIgnoreCase(arenaId.trim())) {
+                arenaName = "MOVI";
+            } else if ("1".equals(arenaId.trim()) || arenaId.trim().toLowerCase().startsWith("davi")) {
+                arenaName = "DAVI";
+            } else if (!arenaId.trim().matches("\\d+")) {
+                arenaName = arenaId.trim();
+            }
+        }
+        String descriptor = "BiteUp " + arenaName;
+        return descriptor.length() > 13 ? descriptor.substring(0, 13).trim() : descriptor;
+    }
+
+    private String obtenerFechaRegistroUsuarioAuth(Long usuarioId) {
+        if (entityManager == null || usuarioId == null || usuarioId <= 0) {
+            return null;
+        }
+        try {
+            List<?> result = entityManager.createNativeQuery(
+                    "SELECT creacion_fecha FROM auth.usuario WHERE id = :uid").setParameter("uid", usuarioId)
+                    .getResultList();
+            if (result != null && !result.isEmpty() && result.get(0) != null) {
+                Object val = result.get(0);
+                if (val instanceof java.sql.Timestamp ts) {
+                    return ts.toInstant().atZone(java.time.ZoneId.of("America/Bogota"))
+                            .format(java.time.format.DateTimeFormatter.ISO_OFFSET_DATE_TIME);
+                } else if (val instanceof java.time.LocalDateTime ldt) {
+                    return ldt.atZone(java.time.ZoneId.of("America/Bogota"))
+                            .format(java.time.format.DateTimeFormatter.ISO_OFFSET_DATE_TIME);
+                } else if (val instanceof java.time.OffsetDateTime odt) {
+                    return odt.format(java.time.format.DateTimeFormatter.ISO_OFFSET_DATE_TIME);
+                } else {
+                    return val.toString();
+                }
+            }
+        } catch (Exception ex) {
+            log.warn("No se pudo consultar auth.usuario.creacion_fecha para usuarioId {}: {}", usuarioId,
+                    ex.getMessage());
+        }
+        return null;
+    }
+
+    private BigDecimal calcularValorTotalOficial(PedidoClientResponse pedidoInfo, List<Long> pedidoIds) {
+        BigDecimal total = pedidoInfo.getValorTotal() != null ? pedidoInfo.getValorTotal() : BigDecimal.ZERO;
+        if (pedidoInfo.getSubpedidos() != null && !pedidoInfo.getSubpedidos().isEmpty()) {
+            for (PedidoClientResponse sub : pedidoInfo.getSubpedidos()) {
+                if (sub.getValorTotal() != null && sub.getValorTotal().compareTo(BigDecimal.ZERO) > 0) {
+                    total = total.add(sub.getValorTotal());
+                }
+            }
+        } else if (pedidoIds != null && !pedidoIds.isEmpty()) {
+            for (Long otroPedidoId : pedidoIds) {
+                if (otroPedidoId != null && !otroPedidoId.equals(pedidoInfo.getId())) {
+                    try {
+                        PedidoClientResponse otro = orderingClient.getPedido(otroPedidoId, null).orElse(null);
+                        if (otro != null && otro.getValorTotal() != null
+                                && Objects.equals(otro.getUsuarioId(), pedidoInfo.getUsuarioId())
+                                && otro.getValorTotal().compareTo(BigDecimal.ZERO) > 0) {
+                            total = total.add(otro.getValorTotal());
+                        }
+                    } catch (Exception ex) {
+                        log.warn("[BU-03] No se pudo consultar el pedido hermano #{} para validar monto total: {}",
+                                otroPedidoId, ex.getMessage());
+                    }
+                }
+            }
+        }
+        return total;
     }
 }

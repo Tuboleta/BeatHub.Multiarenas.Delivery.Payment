@@ -1,3 +1,7 @@
+C:\Users\Dev23\Documents\workspaces\ingenios\MultiArenas\BeatHub.Multiarenas.Delivery.Payment\src\main\java\com\beathub\multiarenas\delivery\payment\audit\AuditContextHolder.java
+C:\Users\Dev23\Documents\workspaces\ingenios\MultiArenas\BeatHub.Multiarenas.Delivery.Payment\src\main\java\com\beathub\multiarenas\delivery\payment\audit\AuditCorrelationFilter.java
+C:\Users\Dev23\Documents\workspaces\ingenios\MultiArenas\BeatHub.Multiarenas.Delivery.Payment\src\main\java\com\beathub\multiarenas\delivery\payment\audit\HibernateAuditEventListener.java
+C:\Users\Dev23\Documents\workspaces\ingenios\MultiArenas\BeatHub.Multiarenas.Delivery.Payment\src\main\java\com\beathub\multiarenas\delivery\payment\audit\HibernateAuditListenerRegistrar.java
 C:\Users\Dev23\Documents\workspaces\ingenios\MultiArenas\BeatHub.Multiarenas.Delivery.Payment\src\main\java\com\beathub\multiarenas\delivery\payment\client\AuthServiceClient.java
 C:\Users\Dev23\Documents\workspaces\ingenios\MultiArenas\BeatHub.Multiarenas.Delivery.Payment\src\main\java\com\beathub\multiarenas\delivery\payment\client\CredibancoRestClient.java
 C:\Users\Dev23\Documents\workspaces\ingenios\MultiArenas\BeatHub.Multiarenas.Delivery.Payment\src\main\java\com\beathub\multiarenas\delivery\payment\client\dto\CredibancoBindingItem.java
@@ -68,6 +72,7 @@ C:\Users\Dev23\Documents\workspaces\ingenios\MultiArenas\BeatHub.Multiarenas.Del
 C:\Users\Dev23\Documents\workspaces\ingenios\MultiArenas\BeatHub.Multiarenas.Delivery.Payment\src\main\java\com\beathub\multiarenas\delivery\payment\entity\ClientePago.java
 C:\Users\Dev23\Documents\workspaces\ingenios\MultiArenas\BeatHub.Multiarenas.Delivery.Payment\src\main\java\com\beathub\multiarenas\delivery\payment\entity\Factura.java
 C:\Users\Dev23\Documents\workspaces\ingenios\MultiArenas\BeatHub.Multiarenas.Delivery.Payment\src\main\java\com\beathub\multiarenas\delivery\payment\entity\GrupoPago.java
+C:\Users\Dev23\Documents\workspaces\ingenios\MultiArenas\BeatHub.Multiarenas.Delivery.Payment\src\main\java\com\beathub\multiarenas\delivery\payment\entity\GrupoPagoPedido.java
 C:\Users\Dev23\Documents\workspaces\ingenios\MultiArenas\BeatHub.Multiarenas.Delivery.Payment\src\main\java\com\beathub\multiarenas\delivery\payment\entity\GrupoPagoUsuario.java
 C:\Users\Dev23\Documents\workspaces\ingenios\MultiArenas\BeatHub.Multiarenas.Delivery.Payment\src\main\java\com\beathub\multiarenas\delivery\payment\entity\log\ExceptionLogEntity.java
 C:\Users\Dev23\Documents\workspaces\ingenios\MultiArenas\BeatHub.Multiarenas.Delivery.Payment\src\main\java\com\beathub\multiarenas\delivery\payment\entity\LogServicio.java
@@ -87,6 +92,7 @@ C:\Users\Dev23\Documents\workspaces\ingenios\MultiArenas\BeatHub.Multiarenas.Del
 C:\Users\Dev23\Documents\workspaces\ingenios\MultiArenas\BeatHub.Multiarenas.Delivery.Payment\src\main\java\com\beathub\multiarenas\delivery\payment\PaymentApplication.java
 C:\Users\Dev23\Documents\workspaces\ingenios\MultiArenas\BeatHub.Multiarenas.Delivery.Payment\src\main\java\com\beathub\multiarenas\delivery\payment\repository\ClientePagoRepository.java
 C:\Users\Dev23\Documents\workspaces\ingenios\MultiArenas\BeatHub.Multiarenas.Delivery.Payment\src\main\java\com\beathub\multiarenas\delivery\payment\repository\FacturaRepository.java
+C:\Users\Dev23\Documents\workspaces\ingenios\MultiArenas\BeatHub.Multiarenas.Delivery.Payment\src\main\java\com\beathub\multiarenas\delivery\payment\repository\GrupoPagoPedidoRepository.java
 C:\Users\Dev23\Documents\workspaces\ingenios\MultiArenas\BeatHub.Multiarenas.Delivery.Payment\src\main\java\com\beathub\multiarenas\delivery\payment\repository\GrupoPagoRepository.java
 C:\Users\Dev23\Documents\workspaces\ingenios\MultiArenas\BeatHub.Multiarenas.Delivery.Payment\src\main\java\com\beathub\multiarenas\delivery\payment\repository\GrupoPagoUsuarioRepository.java
 C:\Users\Dev23\Documents\workspaces\ingenios\MultiArenas\BeatHub.Multiarenas.Delivery.Payment\src\main\java\com\beathub\multiarenas\delivery\payment\repository\log\ExceptionLogRepository.java

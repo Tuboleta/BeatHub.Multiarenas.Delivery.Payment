@@ -26,6 +26,9 @@ public class MpPaymentDetailResponse {
     @JsonProperty("transaction_amount")
     private BigDecimal transactionAmount;
 
+    @JsonProperty("currency_id")
+    private String currencyId;
+
     @JsonProperty("payment_method_id")
     private String paymentMethodId;
 

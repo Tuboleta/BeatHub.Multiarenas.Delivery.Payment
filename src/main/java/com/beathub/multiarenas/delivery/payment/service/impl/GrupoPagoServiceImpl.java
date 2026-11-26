@@ -6,12 +6,14 @@ import com.beathub.multiarenas.delivery.payment.client.dto.PedidoClientResponse;
 import com.beathub.multiarenas.delivery.payment.dto.request.*;
 import com.beathub.multiarenas.delivery.payment.dto.response.*;
 import com.beathub.multiarenas.delivery.payment.entity.GrupoPago;
+import com.beathub.multiarenas.delivery.payment.entity.GrupoPagoPedido;
 import com.beathub.multiarenas.delivery.payment.entity.GrupoPagoUsuario;
 import com.beathub.multiarenas.delivery.payment.entity.PedidoPago;
 import com.beathub.multiarenas.delivery.payment.entity.TipoGrupoPago;
 import com.beathub.multiarenas.delivery.payment.exception.BadRequestException;
 import com.beathub.multiarenas.delivery.payment.exception.ForbiddenException;
 import com.beathub.multiarenas.delivery.payment.exception.ResourceNotFoundException;
+import com.beathub.multiarenas.delivery.payment.repository.GrupoPagoPedidoRepository;
 import com.beathub.multiarenas.delivery.payment.repository.GrupoPagoRepository;
 import com.beathub.multiarenas.delivery.payment.repository.GrupoPagoUsuarioRepository;
 import com.beathub.multiarenas.delivery.payment.repository.PedidoPagoRepository;
@@ -38,6 +40,7 @@ public class GrupoPagoServiceImpl implements GrupoPagoService {
 
     private final GrupoPagoRepository grupoPagoRepository;
     private final GrupoPagoUsuarioRepository grupoPagoUsuarioRepository;
+    private final GrupoPagoPedidoRepository grupoPagoPedidoRepository;
     private final TipoGrupoPagoRepository tipoGrupoPagoRepository;
     private final PedidoPagoRepository pedidoPagoRepository;
     private final OrderingServiceClient orderingClient;
@@ -49,7 +52,7 @@ public class GrupoPagoServiceImpl implements GrupoPagoService {
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     private jakarta.servlet.http.HttpServletRequest httpRequest;
 
-    @Value("${app.pwa.base-url:https://delivery-daviarena-stg.beat-hub.com}")
+    @Value("${app.pwa.base-url:${PWA_BASE_URL:http://localhost:3000}}")
     private String pwaBaseUrl;
 
     @Override
@@ -90,6 +93,36 @@ public class GrupoPagoServiceImpl implements GrupoPagoService {
             }
             log.warn("No se pudo verificar el pedido #{} en Ordering Service. Procediendo con el valorTotal proporcionado en la solicitud: {}",
                     request.getPedidoId(), valorTotal);
+        }
+
+        // Pedido dividido en varias barras: la vaca cubre el valor de todos los pedidos del mismo grupo
+        Set<Long> pedidosVaca = new LinkedHashSet<>();
+        pedidosVaca.add(request.getPedidoId());
+        boolean valorDesdeOrdering = pedidoOpt.isPresent() && pedidoOpt.get().getValorTotal() != null
+                && pedidoOpt.get().getValorTotal().compareTo(BigDecimal.ZERO) > 0;
+        if (valorDesdeOrdering && request.getPedidoIds() != null && !request.getPedidoIds().isEmpty()) {
+            String grupoPedidoPrincipal = pedidoOpt.get().getGrupoPedidoId();
+            if (grupoPedidoPrincipal == null || grupoPedidoPrincipal.isBlank()
+                    || (request.getGrupoPedidoId() != null && !grupoPedidoPrincipal.equals(request.getGrupoPedidoId()))) {
+                throw new BadRequestException("Los pedidos indicados no pertenecen al mismo grupo del pedido #" + request.getPedidoId());
+            }
+            for (Long otroPedidoId : request.getPedidoIds()) {
+                if (otroPedidoId == null || !pedidosVaca.add(otroPedidoId)) {
+                    continue;
+                }
+                PedidoClientResponse otroPedido = orderingClient.getPedido(otroPedidoId, authToken)
+                        .orElseThrow(() -> new ResourceNotFoundException("No se encontró el pedido #" + otroPedidoId
+                                + " en el sistema de órdenes. Verifique que el ID del pedido sea correcto."));
+                if (!grupoPedidoPrincipal.equals(otroPedido.getGrupoPedidoId())) {
+                    throw new BadRequestException("El pedido #" + otroPedidoId + " no pertenece al mismo grupo del pedido #" + request.getPedidoId());
+                }
+                if (otroPedido.getEstadoId() != null && (otroPedido.getEstadoId().equals(13) || otroPedido.getEstadoId().equals(18))) {
+                    throw new BadRequestException("El pedido #" + otroPedidoId + " ya se encuentra pagado o entregado (Estado: " + otroPedido.getEstadoId() + ")");
+                }
+                if (otroPedido.getValorTotal() != null && otroPedido.getValorTotal().compareTo(BigDecimal.ZERO) > 0) {
+                    valorTotal = valorTotal.add(otroPedido.getValorTotal());
+                }
+            }
         }
 
         if (valorTotal.compareTo(BigDecimal.ZERO) <= 0) {
@@ -139,6 +172,8 @@ public class GrupoPagoServiceImpl implements GrupoPagoService {
             }
 
             grupoPago.setPedidoId(request.getPedidoId());
+            String grupoPedidoPrincipal = pedidoOpt.map(PedidoClientResponse::getGrupoPedidoId).orElse(request.getGrupoPedidoId());
+            grupoPago.setGrupoPedidoId(grupoPedidoPrincipal);
             if (arenaIdFinal != null && !arenaIdFinal.isBlank()) {
                 grupoPago.setArenaId(arenaIdFinal);
             }
@@ -190,13 +225,15 @@ public class GrupoPagoServiceImpl implements GrupoPagoService {
 
             boolean esPermanente = Boolean.TRUE.equals(request.getEsPermanente()) || (request.getTipoGrupoPagoId() != null && request.getTipoGrupoPagoId() == 2);
 
+            String grupoPedidoPrincipal = pedidoOpt.map(PedidoClientResponse::getGrupoPedidoId).orElse(request.getGrupoPedidoId());
             grupoPago = GrupoPago.builder()
                     .codigoUnico(codigoUnico)
                     .nombre(request.getNombre() != null && !request.getNombre().isBlank()
-                            ? request.getNombre()
-                            : "Vaca Pedido #" + request.getPedidoId())
+                            ? request.getNombre().trim()
+                            : codigoUnico)
                     .arenaId(arenaIdFinal)
                     .pedidoId(request.getPedidoId())
+                    .grupoPedidoId(grupoPedidoPrincipal)
                     .tipoGrupoPago(tipoGrupoPago)
                     .esPermanente(esPermanente)
                     .modalidadDivision(modalidad)
@@ -250,13 +287,21 @@ public class GrupoPagoServiceImpl implements GrupoPagoService {
             }
         }
 
-        // Notificar a Ordering Service para vincular el grupo al pedido
-        orderingClient.asociarGrupoPago(request.getPedidoId(), grupoPago.getId(), authToken);
+        // Notificar a Ordering Service para vincular el grupo a cada pedido que cubre el grupo de pago
+        for (Long pedidoVacaId : pedidosVaca) {
+            orderingClient.asociarGrupoPago(pedidoVacaId, grupoPago.getId(), authToken);
+            if (!grupoPagoPedidoRepository.existsByGrupoPagoIdAndPedidoId(grupoPago.getId(), pedidoVacaId)) {
+                grupoPagoPedidoRepository.save(GrupoPagoPedido.builder()
+                        .grupoPago(grupoPago)
+                        .pedidoId(pedidoVacaId)
+                        .build());
+            }
+        }
 
         // Despachar invitaciones asíncronas de notificación (Flujo 8: VACA_INVITATION)
         if (request.getParticipantes() != null && !request.getParticipantes().isEmpty()) {
             Long arenaIdNumeric = parseArenaId(grupoPago.getArenaId());
-            String urlVaca = pwaBaseUrl + "/vaca/" + grupoPago.getCodigoUnico();
+            String urlVaca = resolverBaseUrl() + "/vaca/" + grupoPago.getCodigoUnico();
             for (ParticipanteInicialDto p : request.getParticipantes()) {
                 if (p.getUsuarioId() != null && !p.getUsuarioId().equals(usuarioId)) {
                     BigDecimal cuota = esLibre ? null : (p.getMontoAsignado() != null ? p.getMontoAsignado() : cuotaPreasignada);
@@ -279,27 +324,116 @@ public class GrupoPagoServiceImpl implements GrupoPagoService {
     }
 
     @Override
-    @Transactional(readOnly = true)
+    @Transactional
     public GrupoPagoResponse obtenerPorId(Long id, Long currentUsuarioId) {
         GrupoPago grupoPago = grupoPagoRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Grupo de pago no encontrado con ID: " + id));
+        sincronizarPagosPendientesGrupo(grupoPago);
+        grupoPago = grupoPagoRepository.findById(id).orElse(grupoPago);
         return mapearAGrupoPagoResponse(grupoPago, currentUsuarioId);
     }
 
     @Override
-    @Transactional(readOnly = true)
+    @Transactional
     public GrupoPagoResponse obtenerPorCodigo(String codigoUnico, Long currentUsuarioId) {
         GrupoPago grupoPago = grupoPagoRepository.findByCodigoUnico(codigoUnico.trim().toUpperCase())
-                .orElseThrow(() -> new ResourceNotFoundException("Grupo de pago no encontrado con código: " + codigoUnico));
+                .orElseThrow(
+                        () -> new ResourceNotFoundException("Grupo de pago no encontrado con código: " + codigoUnico));
+        sincronizarPagosPendientesGrupo(grupoPago);
+        grupoPago = grupoPagoRepository.findById(grupoPago.getId()).orElse(grupoPago);
         return mapearAGrupoPagoResponse(grupoPago, currentUsuarioId);
     }
 
     @Override
-    @Transactional(readOnly = true)
+    @Transactional
     public GrupoPagoResponse obtenerPorPedidoId(Long pedidoId, Long currentUsuarioId) {
         GrupoPago grupoPago = grupoPagoRepository.findByPedidoId(pedidoId)
-                .orElseThrow(() -> new ResourceNotFoundException("No existe un grupo de pago para el pedido: " + pedidoId));
+                .or(() -> grupoPagoPedidoRepository.findByPedidoId(pedidoId).map(GrupoPagoPedido::getGrupoPago))
+                .orElseThrow(
+                        () -> new ResourceNotFoundException("No existe un grupo de pago para el pedido: " + pedidoId));
+        sincronizarPagosPendientesGrupo(grupoPago);
+        grupoPago = grupoPagoRepository.findById(grupoPago.getId()).orElse(grupoPago);
         return mapearAGrupoPagoResponse(grupoPago, currentUsuarioId);
+    }
+
+    private void sincronizarPagosPendientesGrupo(GrupoPago grupoPago) {
+        if (grupoPago == null || Integer.valueOf(2).equals(grupoPago.getEstadoId())
+                || Integer.valueOf(4).equals(grupoPago.getEstadoId())) {
+            return;
+        }
+
+        try {
+            List<PedidoPago> pagos = new ArrayList<>(
+                    pedidoPagoRepository.findByGrupoPagoUsuario_GrupoPago_Id(grupoPago.getId()));
+            if (grupoPago.getPedidoId() != null) {
+                List<PedidoPago> pagosPedido = pedidoPagoRepository.findByPedidoId(grupoPago.getPedidoId());
+                for (PedidoPago pp : pagosPedido) {
+                    if (pagos.stream().noneMatch(p -> p.getId().equals(pp.getId()))) {
+                        pagos.add(pp);
+                    }
+                }
+            }
+
+            for (PedidoPago p : pagos) {
+                if (p.getEstadoId() != null
+                        && (p.getEstadoId() == PedidoPago.ESTADO_INICIADO || p.getEstadoId() == 1)) {
+                    log.info("[GrupoPago] Sincronizando transacción pendiente #{} para grupo {} (pedido #{})",
+                            p.getId(), grupoPago.getCodigoUnico(), grupoPago.getPedidoId());
+                    try {
+                        paymentService.queryPaymentStatus(p.getId(), p.getArenaId(), p.getUsuarioId());
+                    } catch (Exception ex) {
+                        log.warn("[GrupoPago] Error al sincronizar pago #{}: {}", p.getId(), ex.getMessage());
+                    }
+                }
+            }
+
+            // Evaluar si la suma de pagos aprobados ya cubre la totalidad del pedido (tolerancia por redondeo COP: <= $1.00)
+            List<PedidoPago> pagosActualizados = new ArrayList<>(
+                    pedidoPagoRepository.findByGrupoPagoUsuario_GrupoPago_Id(grupoPago.getId()));
+            if (grupoPago.getPedidoId() != null) {
+                List<PedidoPago> pagosPedido = pedidoPagoRepository.findByPedidoId(grupoPago.getPedidoId());
+                for (PedidoPago pp : pagosPedido) {
+                    if (pagosActualizados.stream().noneMatch(p -> p.getId().equals(pp.getId()))) {
+                        pagosActualizados.add(pp);
+                    }
+                }
+            }
+
+            BigDecimal totalAprobado = pagosActualizados.stream()
+                    .filter(p -> p.getEstadoId() != null && p.getEstadoId() == PedidoPago.ESTADO_APROBADO)
+                    .map(PedidoPago::getMonto)
+                    .filter(Objects::nonNull)
+                    .reduce(BigDecimal.ZERO, BigDecimal::add);
+
+            BigDecimal valorTotal = grupoPago.getValorTotal() != null ? grupoPago.getValorTotal() : BigDecimal.ZERO;
+            BigDecimal saldoCalculado = valorTotal.subtract(totalAprobado).max(BigDecimal.ZERO);
+
+            BigDecimal TOLERANCIA_REDONDEO = new BigDecimal("1.00");
+            if (saldoCalculado.compareTo(TOLERANCIA_REDONDEO) <= 0 && totalAprobado.compareTo(BigDecimal.ZERO) > 0) {
+                if (grupoPago.getEstadoId() == null || grupoPago.getEstadoId() != 2) {
+                    log.info("[GrupoPago] Sincronización detectó vaca {} completamente pagada (Total: {}, Aprobado: {}). Actualizando a COMPLETADO.",
+                            grupoPago.getCodigoUnico(), valorTotal, totalAprobado);
+                    grupoPago.setTotalPagado(totalAprobado);
+                    grupoPago.setSaldoPendiente(BigDecimal.ZERO);
+                    grupoPago.setEstadoId(2); // 2: Completado
+                    grupoPagoRepository.save(grupoPago);
+
+                    if (grupoPago.getPedidoId() != null) {
+                        try {
+                            orderingClient.updateOrderStatus(grupoPago.getPedidoId(), 2,
+                                    "Pago grupal 100% completado (Sincronizado)", null,
+                                    grupoPago.getCodigoUnico(), null, grupoPago.getValorTotal(), "Vaca");
+                        } catch (Exception ex) {
+                            log.error("[GrupoPago] Error notificando a Ordering tras completar vaca {}: {}",
+                                    grupoPago.getCodigoUnico(), ex.getMessage());
+                        }
+                    }
+                }
+            }
+        } catch (Exception ex) {
+            log.warn("[GrupoPago] Error al intentar sincronizar pagos pendientes del grupo {}: {}",
+                    grupoPago.getId(), ex.getMessage());
+        }
     }
 
     @Override
@@ -324,7 +458,8 @@ public class GrupoPagoServiceImpl implements GrupoPagoService {
     @Transactional
     public GrupoPagoResponse unirseAGrupo(String codigoUnico, UnirseGrupoRequest request, Long usuarioId) {
         GrupoPago grupoPago = grupoPagoRepository.findByCodigoUnico(codigoUnico.trim().toUpperCase())
-                .orElseThrow(() -> new ResourceNotFoundException("Grupo de pago no encontrado con código: " + codigoUnico));
+                .orElseThrow(
+                        () -> new ResourceNotFoundException("Grupo de pago no encontrado con código: " + codigoUnico));
 
         return ejecutarUnirse(grupoPago, request, usuarioId);
     }
@@ -344,7 +479,8 @@ public class GrupoPagoServiceImpl implements GrupoPagoService {
                     + resolverNombreEstado(grupoPago.getEstadoId()) + " y no admite nuevos participantes.");
         }
 
-        Optional<GrupoPagoUsuario> existenteOpt = grupoPagoUsuarioRepository.findByGrupoPagoIdAndUsuarioId(grupoPago.getId(), usuarioId);
+        Optional<GrupoPagoUsuario> existenteOpt = grupoPagoUsuarioRepository
+                .findByGrupoPagoIdAndUsuarioId(grupoPago.getId(), usuarioId);
         if (existenteOpt.isPresent()) {
             GrupoPagoUsuario existente = existenteOpt.get();
             if (existente.getEstadoId() == 3) {
@@ -355,10 +491,9 @@ public class GrupoPagoServiceImpl implements GrupoPagoService {
             return mapearAGrupoPagoResponse(grupoPago, usuarioId);
         }
 
-        BigDecimal montoAsignado = request != null ? request.getMontoAsignado() : null;
-        if (montoAsignado == null && !"LIBRE_PAGO".equalsIgnoreCase(grupoPago.getModalidadDivision())) {
-            montoAsignado = grupoPago.getMontoPreasignado();
-        }
+        BigDecimal montoAsignado = !"LIBRE_PAGO".equalsIgnoreCase(grupoPago.getModalidadDivision())
+                ? grupoPago.getMontoPreasignado()
+                : (request != null ? request.getMontoAsignado() : null);
 
         GrupoPagoUsuario nuevoMiembro = GrupoPagoUsuario.builder()
                 .grupoPago(grupoPago)
@@ -376,7 +511,8 @@ public class GrupoPagoServiceImpl implements GrupoPagoService {
 
     @Override
     @Transactional
-    public GrupoPagoResponse agregarParticipante(Long grupoPagoId, AgregarParticipanteRequest request, Long currentUsuarioId) {
+    public GrupoPagoResponse agregarParticipante(Long grupoPagoId, AgregarParticipanteRequest request,
+            Long currentUsuarioId) {
         GrupoPago grupoPago = grupoPagoRepository.findById(grupoPagoId)
                 .orElseThrow(() -> new ResourceNotFoundException("Grupo de pago no encontrado"));
 
@@ -386,11 +522,14 @@ public class GrupoPagoServiceImpl implements GrupoPagoService {
             throw new BadRequestException("No se pueden agregar participantes a un grupo que no está activo.");
         }
 
-        Optional<GrupoPagoUsuario> existente = grupoPagoUsuarioRepository.findByGrupoPagoIdAndUsuarioId(grupoPagoId, request.getUsuarioId());
+        Optional<GrupoPagoUsuario> existente = grupoPagoUsuarioRepository.findByGrupoPagoIdAndUsuarioId(grupoPagoId,
+                request.getUsuarioId());
         if (existente.isPresent()) {
             GrupoPagoUsuario gpu = existente.get();
-            if (request.getMontoAsignado() != null) gpu.setMontoAsignado(request.getMontoAsignado());
-            if (request.getPorcentaje() != null) gpu.setPorcentaje(request.getPorcentaje());
+            if (request.getMontoAsignado() != null)
+                gpu.setMontoAsignado(request.getMontoAsignado());
+            if (request.getPorcentaje() != null)
+                gpu.setPorcentaje(request.getPorcentaje());
             gpu.setEstadoId(1);
             grupoPagoUsuarioRepository.save(gpu);
         } else {
@@ -414,7 +553,7 @@ public class GrupoPagoServiceImpl implements GrupoPagoService {
 
         // Despachar notificación asíncrona de invitación (Flujo 8: VACA_INVITATION)
         Long arenaIdNumeric = parseArenaId(grupoPago.getArenaId());
-        String urlVaca = pwaBaseUrl + "/vaca/" + grupoPago.getCodigoUnico();
+        String urlVaca = resolverBaseUrl() + "/vaca/" + grupoPago.getCodigoUnico();
         notificationServiceClient.notificarInvitacionVaca(
                 arenaIdNumeric,
                 request.getUsuarioId(),
@@ -424,8 +563,7 @@ public class GrupoPagoServiceImpl implements GrupoPagoService {
                 "Líder del Grupo",
                 grupoPago.getNombre(),
                 request.getMontoAsignado() != null ? request.getMontoAsignado() : grupoPago.getMontoPreasignado(),
-                urlVaca
-        );
+                urlVaca);
 
         return mapearAGrupoPagoResponse(grupoPago, currentUsuarioId);
     }
@@ -457,13 +595,15 @@ public class GrupoPagoServiceImpl implements GrupoPagoService {
 
     @Override
     @Transactional
-    public GrupoPagoResponse recalcularCuotas(Long grupoPagoId, RecalcularCuotasRequest request, Long currentUsuarioId) {
+    public GrupoPagoResponse recalcularCuotas(Long grupoPagoId, RecalcularCuotasRequest request,
+            Long currentUsuarioId) {
         GrupoPago grupoPago = grupoPagoRepository.findById(grupoPagoId)
                 .orElseThrow(() -> new ResourceNotFoundException("Grupo de pago no encontrado"));
 
         validarLiderazgo(grupoPago, currentUsuarioId);
 
-        List<GrupoPagoUsuario> participantesActivos = grupoPagoUsuarioRepository.findByGrupoPagoIdAndEstadoIdNot(grupoPagoId, 3);
+        List<GrupoPagoUsuario> participantesActivos = grupoPagoUsuarioRepository
+                .findByGrupoPagoIdAndEstadoIdNot(grupoPagoId, 3);
         if (participantesActivos.isEmpty()) {
             throw new BadRequestException("No hay participantes activos en el grupo.");
         }
@@ -491,12 +631,14 @@ public class GrupoPagoServiceImpl implements GrupoPagoService {
 
     @Override
     @Transactional
-    public PaymentInitResponse pagarCuotaGrupo(Long grupoPagoId, PagarCuotaGrupoRequest request, String arenaId, Long usuarioId) {
+    public PaymentInitResponse pagarCuotaGrupo(Long grupoPagoId, PagarCuotaGrupoRequest request, String arenaId,
+            Long usuarioId) {
         GrupoPago grupoPago = grupoPagoRepository.findById(grupoPagoId)
                 .orElseThrow(() -> new ResourceNotFoundException("Grupo de pago no encontrado"));
 
         if (grupoPago.getEstadoId() != 1) {
-            throw new BadRequestException("El grupo de pago no está activo (Estado: " + resolverNombreEstado(grupoPago.getEstadoId()) + ")");
+            throw new BadRequestException(
+                    "El grupo de pago no está activo (Estado: " + resolverNombreEstado(grupoPago.getEstadoId()) + ")");
         }
 
         if (grupoPago.getSaldoPendiente() != null && grupoPago.getSaldoPendiente().compareTo(BigDecimal.ZERO) <= 0) {
@@ -525,12 +667,18 @@ public class GrupoPagoServiceImpl implements GrupoPagoService {
                     });
         } else {
             // Participante invitado / amigo que accede mediante enlace o QR sin registrarse
-            String nombreInvitado = (request != null && request.getNombre() != null && !request.getNombre().isBlank())
-                    ? request.getNombre().trim()
-                    : "Invitado";
-            String emailInvitado = (request != null && request.getEmail() != null && !request.getEmail().isBlank())
-                    ? request.getEmail().trim()
-                    : null;
+            if (request == null || request.getNombre() == null || request.getNombre().isBlank()) {
+                throw new BadRequestException("El nombre del pagador es obligatorio.");
+            }
+            if (request.getEmail() == null || request.getEmail().isBlank() || !request.getEmail().contains("@")) {
+                throw new BadRequestException("El correo electrónico del pagador es obligatorio para el comprobante.");
+            }
+            if (request.getNumeroDocumento() == null || request.getNumeroDocumento().isBlank()) {
+                throw new BadRequestException("El número de documento de identidad del pagador es obligatorio.");
+            }
+
+            String nombreInvitado = request.getNombre().trim();
+            String emailInvitado = request.getEmail().trim();
 
             BigDecimal montoAsignado = esLibre ? null : grupoPago.getMontoPreasignado();
             GrupoPagoUsuario nuevo = GrupoPagoUsuario.builder()
@@ -550,22 +698,27 @@ public class GrupoPagoServiceImpl implements GrupoPagoService {
         BigDecimal montoAPagar = request != null ? request.getMonto() : null;
 
         if (esLibre) {
-            // Cuando es libre pago, el usuario DEBE asignar el valor dentro del rango del saldo pendiente del pedido
+            // Cuando es libre pago, el usuario DEBE asignar el valor dentro del rango del
+            // saldo pendiente del pedido
             if (montoAPagar == null || montoAPagar.compareTo(BigDecimal.ZERO) <= 0) {
-                throw new BadRequestException("En modalidad de libre pago debe ingresar el monto a aportar (entre $0.01 y $" + grupoPago.getSaldoPendiente() + ").");
+                throw new BadRequestException(
+                        "En modalidad de libre pago debe ingresar el monto a aportar (entre $0.01 y $"
+                                + grupoPago.getSaldoPendiente() + ").");
             }
             if (grupoPago.getSaldoPendiente() != null && montoAPagar.compareTo(grupoPago.getSaldoPendiente()) > 0) {
-                throw new BadRequestException("El monto a aportar ($" + montoAPagar + ") no puede superar el saldo pendiente del pedido ($" + grupoPago.getSaldoPendiente() + ").");
+                throw new BadRequestException("El monto a aportar ($" + montoAPagar
+                        + ") no puede superar el saldo pendiente del pedido ($" + grupoPago.getSaldoPendiente() + ").");
             }
         } else {
             // Cuando es por partes iguales, el valor está preasignado por el sistema
-            if (montoAPagar == null) {
-                BigDecimal cuota = gpu.getMontoAsignado() != null ? gpu.getMontoAsignado() : grupoPago.getMontoPreasignado();
-                BigDecimal pagado = gpu.getMontoPagado() != null ? gpu.getMontoPagado() : BigDecimal.ZERO;
-                montoAPagar = (cuota != null) ? cuota.subtract(pagado).max(BigDecimal.ZERO) : grupoPago.getSaldoPendiente();
-            }
+            // (ignorar cualquier monto arbitrario)
+            BigDecimal cuota = gpu.getMontoAsignado() != null ? gpu.getMontoAsignado()
+                    : grupoPago.getMontoPreasignado();
+            BigDecimal pagado = gpu.getMontoPagado() != null ? gpu.getMontoPagado() : BigDecimal.ZERO;
+            montoAPagar = (cuota != null) ? cuota.subtract(pagado).max(BigDecimal.ZERO) : grupoPago.getSaldoPendiente();
 
-            // Si el participante ya pagó su cuota pero desea liquidar el saldo restante del grupo:
+            // Si el participante ya pagó su cuota pero desea liquidar el saldo restante del
+            // grupo:
             if ((montoAPagar == null || montoAPagar.compareTo(BigDecimal.ZERO) <= 0)
                     && grupoPago.getSaldoPendiente() != null
                     && grupoPago.getSaldoPendiente().compareTo(BigDecimal.ZERO) > 0) {
@@ -581,6 +734,14 @@ public class GrupoPagoServiceImpl implements GrupoPagoService {
                 montoAPagar = grupoPago.getSaldoPendiente();
                 log.info("El monto solicitado excede el saldo pendiente. Ajustado al saldo pendiente: {}", montoAPagar);
             }
+
+            // Si la diferencia restante en la vaca respecto al monto a pagar es de centavos residuales (<= $1.00 COP),
+            // ajustar el monto a pagar exactamente al saldo pendiente de la vaca para liquidarla sin residuos
+            if (grupoPago.getSaldoPendiente() != null
+                    && grupoPago.getSaldoPendiente().compareTo(montoAPagar) > 0
+                    && grupoPago.getSaldoPendiente().subtract(montoAPagar).compareTo(new BigDecimal("1.00")) <= 0) {
+                montoAPagar = grupoPago.getSaldoPendiente();
+            }
         }
 
         // Construir solicitud hacia PaymentService
@@ -592,17 +753,60 @@ public class GrupoPagoServiceImpl implements GrupoPagoService {
         initReq.setGrupoPagoUsuarioId(gpu.getId());
         initReq.setReturnUrl(request != null ? request.getReturnUrl() : null);
         initReq.setFailUrl(request != null ? request.getFailUrl() : null);
-        initReq.setDescription(request != null && request.getDescription() != null && !request.getDescription().isBlank()
-                ? request.getDescription()
-                : "Aporte Vaca " + grupoPago.getNombre() + " (" + grupoPago.getCodigoUnico() + ")");
+        initReq.setDescription(
+                request != null && request.getDescription() != null && !request.getDescription().isBlank()
+                        ? request.getDescription()
+                        : "Aporte Grupo " + grupoPago.getNombre() + " (" + grupoPago.getCodigoUnico() + ")");
+        initReq.setStatementDescriptor(request != null ? request.getStatementDescriptor() : null);
+
+        // Mapear PayerDto explícito para conciliar con pasarelas (Mercado Pago / Credibanco)
+        InitPaymentRequest.PayerDto payerDto = new InitPaymentRequest.PayerDto();
+        if (request != null) {
+            if (request.getNombre() != null && !request.getNombre().isBlank()) {
+                String full = request.getNombre().trim();
+                payerDto.setName(full);
+                String[] p = full.split("\\s+", 2);
+                payerDto.setFirstName(p[0]);
+                if (p.length > 1 && !p[1].isBlank()) {
+                    payerDto.setLastName(p[1]);
+                } else {
+                    payerDto.setLastName("Invitado");
+                }
+            }
+            if (request.getEmail() != null && !request.getEmail().isBlank()) {
+                payerDto.setEmail(request.getEmail().trim());
+            }
+            if (request.getTelefono() != null && !request.getTelefono().isBlank()) {
+                payerDto.setPhone(request.getTelefono().trim());
+            }
+            if (request.getTipoDocumento() != null && !request.getTipoDocumento().isBlank()) {
+                payerDto.setIdentificationType(request.getTipoDocumento().trim());
+            }
+            if (request.getNumeroDocumento() != null && !request.getNumeroDocumento().isBlank()) {
+                payerDto.setIdentificationNumber(request.getNumeroDocumento().trim());
+            }
+        }
+        initReq.setPayer(payerDto);
+
         java.util.Map<String, Object> extraParams = (request != null && request.getExtraParams() != null)
-                ? new java.util.HashMap<>(request.getExtraParams()) : new java.util.HashMap<>();
+                ? new java.util.HashMap<>(request.getExtraParams())
+                : new java.util.HashMap<>();
         if (request != null) {
             if (request.getNombre() != null && !request.getNombre().isBlank()) {
                 extraParams.put("nombre", request.getNombre().trim());
             }
             if (request.getEmail() != null && !request.getEmail().isBlank()) {
                 extraParams.put("email", request.getEmail().trim());
+            }
+            if (request.getTipoDocumento() != null && !request.getTipoDocumento().isBlank()) {
+                extraParams.put("tipoDocumento", request.getTipoDocumento().trim());
+            }
+            if (request.getNumeroDocumento() != null && !request.getNumeroDocumento().isBlank()) {
+                extraParams.put("documento", request.getNumeroDocumento().trim());
+                extraParams.put("numeroDocumento", request.getNumeroDocumento().trim());
+            }
+            if (request.getTelefono() != null && !request.getTelefono().isBlank()) {
+                extraParams.put("telefono", request.getTelefono().trim());
             }
         }
         initReq.setExtraParams(extraParams);
@@ -620,7 +824,8 @@ public class GrupoPagoServiceImpl implements GrupoPagoService {
         validarLiderazgo(grupoPago, currentUsuarioId);
 
         if (grupoPago.getTotalPagado() != null && grupoPago.getTotalPagado().compareTo(BigDecimal.ZERO) > 0) {
-            throw new BadRequestException("No se puede cancelar el grupo porque ya existen aportes pagados. Debe solicitarse reembolso.");
+            throw new BadRequestException(
+                    "No se puede cancelar el grupo porque ya existen aportes pagados. Debe solicitarse reembolso.");
         }
 
         grupoPago.setEstadoId(4); // 4: Cancelado
@@ -644,7 +849,7 @@ public class GrupoPagoServiceImpl implements GrupoPagoService {
     private String generarCodigoUnico() {
         String codigo;
         do {
-            codigo = "VACA-" + UUID.randomUUID().toString().replace("-", "").substring(0, 6).toUpperCase();
+            codigo = "GRP-" + UUID.randomUUID().toString().replace("-", "").substring(0, 6).toUpperCase();
         } while (grupoPagoRepository.findByCodigoUnico(codigo).isPresent());
         return codigo;
     }
@@ -724,7 +929,16 @@ public class GrupoPagoServiceImpl implements GrupoPagoService {
 
         String baseUrl = resolverBaseUrl();
         String qrCodeData = baseUrl + "/vaca/" + gp.getCodigoUnico();
-        String qrCodeImage = qrCodeGeneratorService != null ? qrCodeGeneratorService.generateQrCodeBase64(qrCodeData, 300, 300) : null;
+        String qrCodeImage = qrCodeGeneratorService != null
+                ? qrCodeGeneratorService.generateQrCodeBase64(qrCodeData, 300, 300)
+                : null;
+
+        List<Long> pedidosGrupo = grupoPagoPedidoRepository.findByGrupoPagoId(gp.getId()).stream()
+                .map(GrupoPagoPedido::getPedidoId)
+                .collect(Collectors.toList());
+        if (pedidosGrupo.isEmpty() && gp.getPedidoId() != null) {
+            pedidosGrupo = List.of(gp.getPedidoId());
+        }
 
         return GrupoPagoResponse.builder()
                 .id(gp.getId())
@@ -732,6 +946,8 @@ public class GrupoPagoServiceImpl implements GrupoPagoService {
                 .nombre(gp.getNombre())
                 .arenaId(gp.getArenaId())
                 .pedidoId(gp.getPedidoId())
+                .grupoPedidoId(gp.getGrupoPedidoId())
+                .pedidoIds(pedidosGrupo)
                 .tipoGrupoPagoId(gp.getTipoGrupoPago() != null ? gp.getTipoGrupoPago().getId() : 1)
                 .tipoGrupoPagoNombre(gp.getTipoGrupoPago() != null ? gp.getTipoGrupoPago().getNombre() : "TEMPORAL_DIA")
                 .esPermanente(gp.getEsPermanente())
@@ -809,7 +1025,8 @@ public class GrupoPagoServiceImpl implements GrupoPagoService {
     }
 
     private String resolverNombreEstado(Integer estadoId) {
-        if (estadoId == null) return "DESCONOCIDO";
+        if (estadoId == null)
+            return "DESCONOCIDO";
         return switch (estadoId) {
             case 1 -> "ACTIVO";
             case 2 -> "COMPLETADO";
@@ -820,7 +1037,8 @@ public class GrupoPagoServiceImpl implements GrupoPagoService {
     }
 
     private String resolverNombreEstadoUsuario(Integer estadoId) {
-        if (estadoId == null) return "DESCONOCIDO";
+        if (estadoId == null)
+            return "DESCONOCIDO";
         return switch (estadoId) {
             case 1 -> "PENDIENTE";
             case 2 -> "PAGADO";
@@ -830,7 +1048,8 @@ public class GrupoPagoServiceImpl implements GrupoPagoService {
     }
 
     private String resolverNombreEstadoPago(Integer estadoId) {
-        if (estadoId == null) return "DESCONOCIDO";
+        if (estadoId == null)
+            return "DESCONOCIDO";
         return switch (estadoId) {
             case 1 -> "INICIADO";
             case 2 -> "APROBADO";
@@ -844,7 +1063,7 @@ public class GrupoPagoServiceImpl implements GrupoPagoService {
     private String resolverBaseUrl() {
         if (httpRequest != null) {
             String origin = httpRequest.getHeader("Origin");
-            if (origin != null && !origin.isBlank() && !origin.contains("localhost")) {
+            if (origin != null && !origin.isBlank()) {
                 return origin.replaceAll("/+$", "");
             }
             String xForwardedHost = httpRequest.getHeader("X-Forwarded-Host");
@@ -853,27 +1072,34 @@ public class GrupoPagoServiceImpl implements GrupoPagoService {
                 String scheme = (proto != null && !proto.isBlank()) ? proto : "https";
                 return scheme + "://" + xForwardedHost.replaceAll("/+$", "");
             }
+            String host = httpRequest.getHeader("Host");
+            if (host != null && !host.isBlank()) {
+                String proto = httpRequest.getHeader("X-Forwarded-Proto");
+                String scheme = (proto != null && !proto.isBlank()) ? proto : (httpRequest.isSecure() ? "https" : "http");
+                return scheme + "://" + host.replaceAll("/+$", "");
+            }
             String referer = httpRequest.getHeader("Referer");
-            if (referer != null && !referer.isBlank() && !referer.contains("localhost")) {
+            if (referer != null && !referer.isBlank()) {
                 try {
                     java.net.URI uri = new java.net.URI(referer);
                     return uri.getScheme() + "://" + uri.getAuthority();
-                } catch (Exception ignored) {}
+                } catch (Exception ignored) {
+                }
             }
         }
-        if (pwaBaseUrl != null && !pwaBaseUrl.isBlank() && !pwaBaseUrl.contains("localhost")) {
+        if (pwaBaseUrl != null && !pwaBaseUrl.isBlank()) {
             return pwaBaseUrl.replaceAll("/+$", "");
         }
-        return (pwaBaseUrl != null && !pwaBaseUrl.isBlank()) ? pwaBaseUrl : "https://delivery-daviarena-stg.beat-hub.com";
+        return "http://localhost:3000";
     }
 
     private Long parseArenaId(String arenaId) {
         if (arenaId != null) {
             try {
                 return Long.parseLong(arenaId);
-            } catch (NumberFormatException ignored) {}
+            } catch (NumberFormatException ignored) {
+            }
         }
         return 1L;
     }
 }
-

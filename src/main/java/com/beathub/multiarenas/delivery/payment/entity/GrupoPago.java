@@ -30,6 +30,9 @@ public class GrupoPago {
     @Column(name = "pedido_id")
     private Long pedidoId;
 
+    @Column(name = "grupo_pedido_id", length = 100)
+    private String grupoPedidoId;
+
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "tipo_grupo_pago_id")
     private TipoGrupoPago tipoGrupoPago;

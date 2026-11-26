@@ -27,6 +27,9 @@ public class MpOrderResponse {
     @JsonProperty("total_amount")
     private BigDecimal totalAmount;
 
+    @JsonProperty("currency_id")
+    private String currencyId;
+
     private String description;
 
     @JsonProperty("init_point")

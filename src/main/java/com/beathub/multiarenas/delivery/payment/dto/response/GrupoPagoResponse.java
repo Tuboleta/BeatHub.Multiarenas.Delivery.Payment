@@ -20,6 +20,8 @@ public class GrupoPagoResponse {
     private String nombre;
     private String arenaId;
     private Long pedidoId;
+    private String grupoPedidoId;
+    private List<Long> pedidoIds;
     private Integer tipoGrupoPagoId;
     private String tipoGrupoPagoNombre;
     private Boolean esPermanente;

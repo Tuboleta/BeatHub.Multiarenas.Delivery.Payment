@@ -12,6 +12,7 @@ import com.beathub.multiarenas.delivery.payment.entity.GrupoPago;
 import com.beathub.multiarenas.delivery.payment.entity.GrupoPagoUsuario;
 import com.beathub.multiarenas.delivery.payment.entity.TipoGrupoPago;
 import com.beathub.multiarenas.delivery.payment.exception.BadRequestException;
+import com.beathub.multiarenas.delivery.payment.repository.GrupoPagoPedidoRepository;
 import com.beathub.multiarenas.delivery.payment.repository.GrupoPagoRepository;
 import com.beathub.multiarenas.delivery.payment.repository.GrupoPagoUsuarioRepository;
 import com.beathub.multiarenas.delivery.payment.repository.PedidoPagoRepository;
@@ -45,6 +46,9 @@ class GrupoPagoServiceTest {
     private GrupoPagoUsuarioRepository grupoPagoUsuarioRepository;
 
     @Mock
+    private GrupoPagoPedidoRepository grupoPagoPedidoRepository;
+
+    @Mock
     private TipoGrupoPagoRepository tipoGrupoPagoRepository;
 
     @Mock
@@ -58,6 +62,9 @@ class GrupoPagoServiceTest {
 
     @Mock
     private QrCodeGeneratorService qrCodeGeneratorService;
+
+    @Mock
+    private com.beathub.multiarenas.delivery.payment.client.AuthServiceClient authClient;
 
     @InjectMocks
     private GrupoPagoServiceImpl grupoPagoService;
@@ -144,7 +151,7 @@ class GrupoPagoServiceTest {
 
         assertNotNull(response);
         assertEquals(100L, response.getId());
-        assertTrue(response.getCodigoUnico().startsWith("VACA-"));
+        assertTrue(response.getCodigoUnico().startsWith("GRP-"));
         assertEquals("POR_PARTES_IGUALES", response.getModalidadDivision());
         assertEquals(new BigDecimal("25000.00"), response.getMontoPreasignado());
         assertEquals(4, response.getCantidadPersonas());
@@ -240,6 +247,87 @@ class GrupoPagoServiceTest {
                 grupoPagoService.crearGrupo(request, "ARENA-BOG-01", 10L, null));
 
         verify(grupoPagoRepository, never()).save(any());
+    }
+
+    @Test
+    @DisplayName("Debe crear la vaca por el total de todos los pedidos cuando el pedido se dividió en varias barras")
+    void crearGrupo_MultiplesBarras_SumaTodosLosPedidosDelGrupo() {
+        CrearGrupoPagoRequest request = CrearGrupoPagoRequest.builder()
+                .pedidoId(55L)
+                .grupoPedidoId("GRP-MULTI-01")
+                .pedidoIds(List.of(56L))
+                .divisionTipo("POR_PARTES_IGUALES")
+                .cantidadPersonas(2)
+                .build();
+
+        PedidoClientResponse pedidoPrincipal = PedidoClientResponse.builder()
+                .id(55L)
+                .arenaId("ARENA-BOG-01")
+                .grupoPedidoId("GRP-MULTI-01")
+                .valorTotal(new BigDecimal("92000.00"))
+                .estadoId(12)
+                .build();
+        PedidoClientResponse pedidoOtraBarra = PedidoClientResponse.builder()
+                .id(56L)
+                .arenaId("ARENA-BOG-01")
+                .grupoPedidoId("GRP-MULTI-01")
+                .valorTotal(new BigDecimal("13000.00"))
+                .estadoId(12)
+                .build();
+
+        when(grupoPagoRepository.findByPedidoIdAndEstadoId(55L, 1)).thenReturn(Optional.empty());
+        when(orderingClient.getPedido(eq(55L), any())).thenReturn(Optional.of(pedidoPrincipal));
+        when(orderingClient.getPedido(eq(56L), any())).thenReturn(Optional.of(pedidoOtraBarra));
+        when(tipoGrupoPagoRepository.findById(anyInt())).thenReturn(Optional.of(tipoGrupoPago));
+        when(grupoPagoRepository.findByCodigoUnico(anyString())).thenReturn(Optional.empty());
+        when(grupoPagoRepository.save(any(GrupoPago.class))).thenAnswer(inv -> {
+            GrupoPago gp = inv.getArgument(0);
+            gp.setId(102L);
+            return gp;
+        });
+        when(grupoPagoUsuarioRepository.findByGrupoPagoId(anyLong())).thenReturn(List.of(grupoPagoUsuario));
+        when(pedidoPagoRepository.findByGrupoPagoUsuario_GrupoPago_Id(anyLong())).thenReturn(Collections.emptyList());
+        when(qrCodeGeneratorService.generateQrCodeBase64(anyString(), anyInt(), anyInt())).thenReturn("data:image/png;base64,mockQrCode");
+
+        GrupoPagoResponse response = grupoPagoService.crearGrupo(request, "ARENA-BOG-01", 10L, "mock-token");
+
+        assertEquals(new BigDecimal("105000.00"), response.getValorTotal());
+        assertEquals(new BigDecimal("105000.00"), response.getSaldoPendiente());
+        assertEquals(new BigDecimal("52500.00"), response.getMontoPreasignado());
+        verify(orderingClient).asociarGrupoPago(eq(55L), eq(102L), any());
+        verify(orderingClient).asociarGrupoPago(eq(56L), eq(102L), any());
+    }
+
+    @Test
+    @DisplayName("Debe rechazar la vaca si uno de los pedidos indicados no pertenece al mismo grupo")
+    void crearGrupo_MultiplesBarras_Falla_SiPedidoEsDeOtroGrupo() {
+        CrearGrupoPagoRequest request = CrearGrupoPagoRequest.builder()
+                .pedidoId(55L)
+                .pedidoIds(List.of(55L, 77L))
+                .build();
+
+        PedidoClientResponse pedidoPrincipal = PedidoClientResponse.builder()
+                .id(55L)
+                .grupoPedidoId("GRP-MULTI-01")
+                .valorTotal(new BigDecimal("92000.00"))
+                .estadoId(12)
+                .build();
+        PedidoClientResponse pedidoAjeno = PedidoClientResponse.builder()
+                .id(77L)
+                .grupoPedidoId("GRP-OTRO-99")
+                .valorTotal(new BigDecimal("50000.00"))
+                .estadoId(12)
+                .build();
+
+        when(grupoPagoRepository.findByPedidoIdAndEstadoId(55L, 1)).thenReturn(Optional.empty());
+        when(orderingClient.getPedido(eq(55L), any())).thenReturn(Optional.of(pedidoPrincipal));
+        when(orderingClient.getPedido(eq(77L), any())).thenReturn(Optional.of(pedidoAjeno));
+
+        assertThrows(BadRequestException.class, () ->
+                grupoPagoService.crearGrupo(request, "ARENA-BOG-01", 10L, "mock-token"));
+
+        verify(grupoPagoRepository, never()).save(any());
+        verify(orderingClient, never()).asociarGrupoPago(anyLong(), anyLong(), any());
     }
 
     @Test
@@ -381,5 +469,31 @@ class GrupoPagoServiceTest {
                 grupoPagoService.cancelarGrupo(100L, 10L));
 
         verify(grupoPagoRepository, never()).save(any());
+    }
+
+    @Test
+    @DisplayName("Debe obtener grupo de pago por pedido secundario de una compra multi-barra")
+    void obtenerPorPedidoId_EncuentraPorPedidoSecundario_MultiBarra() {
+        when(grupoPagoRepository.findByPedidoId(502L)).thenReturn(Optional.empty());
+        when(grupoPagoPedidoRepository.findByPedidoId(502L)).thenReturn(Optional.of(
+                com.beathub.multiarenas.delivery.payment.entity.GrupoPagoPedido.builder()
+                        .grupoPago(grupoPago)
+                        .pedidoId(502L)
+                        .build()
+        ));
+        when(grupoPagoRepository.findById(100L)).thenReturn(Optional.of(grupoPago));
+        when(grupoPagoUsuarioRepository.findByGrupoPagoId(100L)).thenReturn(List.of(grupoPagoUsuario));
+        when(pedidoPagoRepository.findByGrupoPagoUsuario_GrupoPago_Id(100L)).thenReturn(Collections.emptyList());
+        when(grupoPagoPedidoRepository.findByGrupoPagoId(100L)).thenReturn(List.of(
+                com.beathub.multiarenas.delivery.payment.entity.GrupoPagoPedido.builder().grupoPago(grupoPago).pedidoId(501L).build(),
+                com.beathub.multiarenas.delivery.payment.entity.GrupoPagoPedido.builder().grupoPago(grupoPago).pedidoId(502L).build()
+        ));
+
+        GrupoPagoResponse response = grupoPagoService.obtenerPorPedidoId(502L, 10L);
+
+        assertNotNull(response);
+        assertEquals(100L, response.getId());
+        assertEquals(2, response.getPedidoIds().size());
+        assertTrue(response.getPedidoIds().contains(502L));
     }
 }

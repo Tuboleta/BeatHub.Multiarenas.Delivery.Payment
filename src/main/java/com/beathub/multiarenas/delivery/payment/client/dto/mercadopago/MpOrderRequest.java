@@ -5,6 +5,7 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 import lombok.*;
 
 import java.util.List;
+import java.util.Map;
 
 @Data
 @Builder
@@ -22,7 +23,7 @@ public class MpOrderRequest {
 
     @Builder.Default
     @JsonProperty("capture_mode")
-    private String captureMode = "automatic_async";
+    private String captureMode = "automatic";
 
     @JsonProperty("external_reference")
     private String externalReference;
@@ -35,6 +36,10 @@ public class MpOrderRequest {
     private List<Item> items;
 
     private Payer payer;
+
+    @JsonProperty("additional_info")
+    @JsonInclude(JsonInclude.Include.NON_EMPTY)
+    private Map<String, Object> additionalInfo;
 
     private Config config;
 
@@ -148,6 +153,42 @@ public class MpOrderRequest {
         private String neighborhood;
         @JsonProperty("city")
         private String city;
+    }
+
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public static class AdditionalInfo {
+        private AdditionalPayer payer;
+        private List<Item> items;
+        @JsonProperty("ip_address")
+        private String ipAddress;
+    }
+
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public static class AdditionalPayer {
+        @JsonProperty("first_name")
+        private String firstName;
+        @JsonProperty("last_name")
+        private String lastName;
+        private Phone phone;
+        private Address address;
+        @JsonProperty("registration_date")
+        private String registrationDate;
+        @JsonProperty("is_prime_user")
+        private Boolean isPrimeUser;
+        @JsonProperty("is_first_purchase_online")
+        private Boolean isFirstPurchaseOnline;
+        @JsonProperty("authentication_type")
+        private String authenticationType;
+        @JsonProperty("last_purchase")
+        private String lastPurchase;
     }
 
     @Data

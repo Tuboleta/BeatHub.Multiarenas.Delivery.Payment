@@ -1,5 +1,6 @@
 package com.beathub.multiarenas.delivery.payment.controller;
 
+import com.beathub.multiarenas.delivery.payment.exception.UnauthorizedException;
 import com.beathub.multiarenas.delivery.payment.repository.PedidoPagoRepository;
 import com.beathub.multiarenas.delivery.payment.service.IntegrationAuditService;
 import com.beathub.multiarenas.delivery.payment.service.MercadoPagoService;
@@ -9,6 +10,7 @@ import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
@@ -101,6 +103,22 @@ public class MercadoPagoWebhookController {
                     200,
                     "SUCCESS"
             );
+        } catch (UnauthorizedException uex) {
+            log.warn("[WEBHOOK MERCADOPAGO - SEGURIDAD] Notificación rechazada (401): {}", uex.getMessage());
+
+            auditService.logWebhook(
+                    IntegrationAuditService.SERVICIO_MERCADOPAGO,
+                    arenaId,
+                    usuarioId,
+                    operacionLog,
+                    payloadMap,
+                    "UNAUTHORIZED: " + uex.getMessage(),
+                    startTime,
+                    LocalDateTime.now(),
+                    401,
+                    "UNAUTHORIZED"
+            );
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body("UNAUTHORIZED");
         } catch (Exception ex) {
             log.error("[WEBHOOK MERCADOPAGO - NOTIFICACIÓN] Error procesando notificación webhook: {}", ex.getMessage(), ex);
 

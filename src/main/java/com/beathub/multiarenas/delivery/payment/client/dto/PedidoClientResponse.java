@@ -19,6 +19,7 @@ public class PedidoClientResponse {
     private Long usuarioId;
     private String arenaId;
     private Long grupoPagoId;
+    private String grupoPedidoId;
     private BigDecimal valorTotal;
     private Integer estadoId;
 
@@ -30,6 +31,9 @@ public class PedidoClientResponse {
 
     // Ítems del pedido desde Ordering
     private List<CarritoItemClientResponse> items;
+
+    // Subpedidos en órdenes multi-tienda agrupadas
+    private List<PedidoClientResponse> subpedidos;
 
     @Data
     @Builder

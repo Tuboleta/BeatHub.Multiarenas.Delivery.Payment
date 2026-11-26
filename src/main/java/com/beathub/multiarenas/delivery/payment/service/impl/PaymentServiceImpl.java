@@ -26,9 +26,11 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.UUID;
 
 @Service
@@ -41,6 +43,7 @@ public class PaymentServiceImpl implements PaymentService {
     private final MedioPagoRepository medioPagoRepository;
     private final GrupoPagoUsuarioRepository grupoPagoUsuarioRepository;
     private final GrupoPagoRepository grupoPagoRepository;
+    private final GrupoPagoPedidoRepository grupoPagoPedidoRepository;
     private final ClientePagoRepository clientePagoRepository;
     private final TarjetaClientePagoRepository tarjetaClientePagoRepository;
     private final CredibancoRestClient credibancoClient;
@@ -94,29 +97,88 @@ public class PaymentServiceImpl implements PaymentService {
             log.warn("No se pudo serializar extraParams: {}", e.getMessage());
         }
 
-        // C-05: El monto del pago se valida contra el total real en Ordering
+        // BU-03: Validación estricta y sincronización del monto contra Ordering
+        // (Fail-Closed)
         if (request.getPedidoId() != null) {
+            com.beathub.multiarenas.delivery.payment.client.dto.PedidoClientResponse pedido;
             try {
-                com.beathub.multiarenas.delivery.payment.client.dto.PedidoClientResponse pedido = orderingClient
-                        .getPedido(request.getPedidoId(), null).orElse(null);
-                if (pedido != null) {
-                    if (pedido.getUsuarioId() != null && !pedido.getUsuarioId().equals(usuarioId)
-                            && request.getGrupoPagoUsuarioId() == null) {
-                        throw new PaymentException("El pedido no pertenece al usuario autenticado");
-                    }
-                    if (request.getGrupoPagoUsuarioId() == null && pedido.getValorTotal() != null
-                            && pedido.getValorTotal().compareTo(BigDecimal.ZERO) > 0) {
-                        if (request.getMonto() == null || request.getMonto().compareTo(pedido.getValorTotal()) != 0) {
-                            log.info("Monto de pago sincronizado con valor oficial del pedido: {} -> {}",
-                                    request.getMonto(), pedido.getValorTotal());
-                            request.setMonto(pedido.getValorTotal());
-                        }
-                    }
-                }
+                pedido = orderingClient.getPedido(request.getPedidoId(), null)
+                        .orElseThrow(() -> new PaymentException(
+                                "Pedido #" + request.getPedidoId() + " no encontrado en el servicio de órdenes."));
             } catch (PaymentException pe) {
                 throw pe;
             } catch (Exception ex) {
-                log.warn("No se pudo validar el pedido con Ordering: {}", ex.getMessage());
+                log.error("[BU-03] Error consultando Ordering para pedido #{}: {}", request.getPedidoId(),
+                        ex.getMessage());
+                throw new PaymentException("El servicio de órdenes no está disponible. No se puede iniciar el pago.");
+            }
+
+            if (pedido.getValorTotal() == null || pedido.getValorTotal().compareTo(BigDecimal.ZERO) <= 0) {
+                throw new PaymentException("El pedido no tiene un monto válido para pago.");
+            }
+
+            if (request.getGrupoPagoUsuarioId() == null) {
+                if (pedido.getUsuarioId() != null && !pedido.getUsuarioId().equals(usuarioId)) {
+                    throw new PaymentException("El pedido no pertenece al usuario autenticado");
+                }
+                BigDecimal valorTotalOficial = calcularValorTotalOficial(pedido, request.getPedidoIds());
+                if (request.getMonto() != null && request.getMonto().compareTo(valorTotalOficial) != 0) {
+                    log.warn("[BU-03] Monto manipulado por el cliente ({}). Reemplazado por el valor oficial: {}",
+                            request.getMonto(), valorTotalOficial);
+                }
+                request.setMonto(valorTotalOficial);
+            } else {
+                if (grupoPagoUsuario == null) {
+                    throw new PaymentException("La cuota de pago grupal especificada no existe.");
+                }
+                GrupoPago gp = grupoPagoUsuario.getGrupoPago();
+                if (gp != null && gp.getPedidoId() != null
+                        && !request.getPedidoId().equals(gp.getPedidoId())) {
+                    boolean pedidoAsociado = grupoPagoPedidoRepository.existsByGrupoPagoIdAndPedidoId(gp.getId(),
+                            request.getPedidoId());
+                    if (!pedidoAsociado) {
+                        throw new PaymentException("La cuota de pago grupal no corresponde al pedido indicado.");
+                    }
+                }
+                if (grupoPagoUsuario.getUsuarioId() != null
+                        && !grupoPagoUsuario.getUsuarioId().equals(0L)
+                        && !grupoPagoUsuario.getUsuarioId().equals(usuarioId)) {
+                    throw new PaymentException("La cuota de pago grupal no pertenece al usuario autenticado");
+                }
+
+                boolean esLibre = gp != null && "LIBRE_PAGO".equalsIgnoreCase(gp.getModalidadDivision());
+
+                if (esLibre || grupoPagoUsuario.getMontoAsignado() == null) {
+                    // Modalidad LIBRE APORTE: Respetar el monto que el usuario ingresó
+                    if (request.getMonto() == null || request.getMonto().compareTo(BigDecimal.ZERO) <= 0) {
+                        throw new PaymentException("Debe ingresar un monto válido a aportar.");
+                    }
+                    if (gp != null && gp.getSaldoPendiente() != null
+                            && request.getMonto().compareTo(gp.getSaldoPendiente()) > 0) {
+                        throw new PaymentException("El monto a aportar ($" + request.getMonto()
+                                + ") supera el saldo pendiente del grupo ($" + gp.getSaldoPendiente() + ").");
+                    }
+                } else {
+                    // Modalidad POR PARTES IGUALES: Cuota fija preasignada
+                    BigDecimal asignado = grupoPagoUsuario.getMontoAsignado();
+                    BigDecimal pagado = grupoPagoUsuario.getMontoPagado() != null
+                            ? grupoPagoUsuario.getMontoPagado()
+                            : BigDecimal.ZERO;
+                    BigDecimal saldoCuota = asignado.subtract(pagado);
+                    if (saldoCuota.compareTo(BigDecimal.ZERO) <= 0) {
+                        if (gp != null && gp.getSaldoPendiente() != null
+                                && gp.getSaldoPendiente().compareTo(BigDecimal.ZERO) > 0) {
+                            saldoCuota = gp.getSaldoPendiente();
+                        } else {
+                            throw new PaymentException("La cuota de pago grupal ya se encuentra saldada.");
+                        }
+                    }
+                    if (gp != null && gp.getSaldoPendiente() != null
+                            && saldoCuota.compareTo(gp.getSaldoPendiente()) > 0) {
+                        saldoCuota = gp.getSaldoPendiente();
+                    }
+                    request.setMonto(saldoCuota);
+                }
             }
         }
 
@@ -218,6 +280,7 @@ public class PaymentServiceImpl implements PaymentService {
             pedidoPago.setErrorCode(credibancoResp.getErrorCode());
             pedidoPago.setErrorMessage(credibancoResp.getErrorMessage());
             pedidoPagoRepository.save(pedidoPago);
+            notificarEstadoPagoRechazado(pedidoPago, credibancoResp.getErrorMessage());
 
             throw new CredibancoApiException(credibancoResp.getErrorCode(),
                     "Error registrando orden en Credibanco: " + credibancoResp.getErrorMessage());
@@ -280,6 +343,23 @@ public class PaymentServiceImpl implements PaymentService {
         if (pagos.isEmpty()) {
             throw new ResourceNotFoundException("No se encontró registro de pago para el pedido " + pedidoId);
         }
+
+        PaymentStatusResponse lastSyncedResp = null;
+        for (PedidoPago p : pagos) {
+            if (p.getEstadoId() != null && (p.getEstadoId() == PedidoPago.ESTADO_INICIADO || p.getEstadoId() == 1)) {
+                if (Integer.valueOf(IntegrationAuditService.SERVICIO_MERCADOPAGO).equals(p.getPasarelaId())
+                        || (p.getMpOrderId() != null && !Integer.valueOf(IntegrationAuditService.SERVICIO_CREDIBANCO)
+                                .equals(p.getPasarelaId()))) {
+                    lastSyncedResp = mercadoPagoService.queryOrderStatus(p.getId(), arenaId, usuarioId);
+                } else {
+                    lastSyncedResp = syncAndMapPaymentStatus(p, arenaId, usuarioId);
+                }
+            }
+        }
+        if (lastSyncedResp != null) {
+            return lastSyncedResp;
+        }
+
         PedidoPago masReciente = pagos.get(pagos.size() - 1);
         if (Integer.valueOf(IntegrationAuditService.SERVICIO_MERCADOPAGO).equals(masReciente.getPasarelaId())
                 || (masReciente.getMpOrderId() != null && !Integer.valueOf(IntegrationAuditService.SERVICIO_CREDIBANCO)
@@ -316,8 +396,14 @@ public class PaymentServiceImpl implements PaymentService {
     }
 
     private PaymentStatusResponse syncAndMapPaymentStatus(PedidoPago pedidoPago, String arenaId, Long usuarioId) {
-        // Consultar estado en tiempo real en Credibanco
-        if (pedidoPago.getCredibancoOrderId() != null) {
+        // Cortocircuito defensivo: si el pago ya está aprobado en base de datos, evitar
+        // llamadas síncronas a Credibanco
+        boolean yaAprobado = Integer.valueOf(2).equals(pedidoPago.getEstadoId())
+                || Integer.valueOf(PedidoPago.ESTADO_APROBADO).equals(pedidoPago.getEstadoId());
+
+        // Consultar estado en tiempo real en Credibanco únicamente si el pago aún no
+        // está aprobado
+        if (!yaAprobado && pedidoPago.getCredibancoOrderId() != null) {
             try {
                 CredibancoStatusResponse statusResp = credibancoClient.getOrderStatusExtended(
                         pedidoPago.getCredibancoOrderId(),
@@ -392,6 +478,7 @@ public class PaymentServiceImpl implements PaymentService {
                     } else if (statusResp.getOrderStatus() != null && statusResp.getOrderStatus() == 6) {
                         pedidoPago.setEstadoId(PedidoPago.ESTADO_RECHAZADO); // 24: Rechazado (Flujo 5)
                         pedidoPagoRepository.save(pedidoPago);
+                        notificarEstadoPagoRechazado(pedidoPago, statusResp.getErrorMessage());
                     } else {
                         pedidoPagoRepository.save(pedidoPago);
                     }
@@ -436,19 +523,22 @@ public class PaymentServiceImpl implements PaymentService {
         }
 
         String secretKey = credibancoProperties.getSecretKeyHmac();
-        if (secretKey != null && !secretKey.isBlank() && !"TEST_CALLBACK_KEY".equalsIgnoreCase(secretKey)) {
-            String dataToVerify = String.format("%s;%s;%s;%s;",
-                    mdOrder != null ? mdOrder : "",
-                    operation != null ? operation : "",
-                    orderNumber != null ? orderNumber : "",
-                    status != null ? String.valueOf(status) : "");
-            boolean validSignature = hmacSignatureService.verifySignature(secretKey, dataToVerify, checksum)
-                    || hmacSignatureService.verifySignature(secretKey,
-                            (mdOrder != null ? mdOrder : "") + (orderNumber != null ? orderNumber : ""), checksum);
-            if (!validSignature) {
-                log.error("Firma HMAC inválida en webhook de Credibanco. checksum={}", checksum);
-                throw new PaymentException("Firma HMAC inválida en callback de Credibanco");
-            }
+        if (secretKey == null || secretKey.isBlank()) {
+            log.error("Rechazando webhook de Credibanco: secretKeyHmac no configurado en el servidor");
+            throw new PaymentException("Configuración de seguridad HMAC de Credibanco no disponible");
+        }
+
+        String dataToVerify = String.format("%s;%s;%s;%s;",
+                mdOrder != null ? mdOrder : "",
+                operation != null ? operation : "",
+                orderNumber != null ? orderNumber : "",
+                status != null ? String.valueOf(status) : "");
+        boolean validSignature = hmacSignatureService.verifySignature(secretKey, dataToVerify, checksum)
+                || hmacSignatureService.verifySignature(secretKey,
+                        (mdOrder != null ? mdOrder : "") + (orderNumber != null ? orderNumber : ""), checksum);
+        if (!validSignature) {
+            log.error("Firma HMAC inválida en webhook de Credibanco. checksum={}", checksum);
+            throw new PaymentException("Firma HMAC inválida en callback de Credibanco");
         }
 
         // 2. Buscar transacción por referencia o mdOrder
@@ -488,15 +578,9 @@ public class PaymentServiceImpl implements PaymentService {
                 throw new PaymentException("Error validando estado de pago con Credibanco: " + ex.getMessage());
             }
         } else if ("reversed".equalsIgnoreCase(operation)) {
-            pedidoPago.setEstadoId(PedidoPago.ESTADO_REVERSADO); // 25: Reversado (Flujo 5)
-            pedidoPagoRepository.save(pedidoPago);
-            orderingClient.updateOrderStatus(pedidoPago.getPedidoId(), PedidoPago.ESTADO_REVERSADO,
-                    "Pago reversado via webhook Credibanco", null);
+            syncAndMapPaymentStatus(pedidoPago, pedidoPago.getArenaId(), pedidoPago.getUsuarioId());
         } else if ("refunded".equalsIgnoreCase(operation)) {
-            pedidoPago.setEstadoId(PedidoPago.ESTADO_ANULADO); // 26: Anulado/Reembolsado (Flujo 5)
-            pedidoPagoRepository.save(pedidoPago);
-            orderingClient.updateOrderStatus(pedidoPago.getPedidoId(), PedidoPago.ESTADO_ANULADO,
-                    "Pago anulado/reembolsado via webhook Credibanco", null);
+            syncAndMapPaymentStatus(pedidoPago, pedidoPago.getArenaId(), pedidoPago.getUsuarioId());
         }
     }
 
@@ -541,15 +625,22 @@ public class PaymentServiceImpl implements PaymentService {
 
                 BigDecimal valorTotal = gp.getValorTotal() != null ? gp.getValorTotal() : BigDecimal.ZERO;
                 BigDecimal nuevoSaldo = valorTotal.subtract(nuevoTotalPagado).max(BigDecimal.ZERO);
+
+                // Tolerancia para centavos o pesos residuales por redondeo de cuotas (COP: <= $1.00)
+                BigDecimal TOLERANCIA_REDONDEO = new BigDecimal("1.00");
+                if (nuevoSaldo.compareTo(TOLERANCIA_REDONDEO) <= 0) {
+                    nuevoSaldo = BigDecimal.ZERO;
+                }
                 gp.setSaldoPendiente(nuevoSaldo);
 
                 if (nuevoSaldo.compareTo(BigDecimal.ZERO) <= 0) {
                     gp.setEstadoId(2); // 2: Completado (100% Pagado)
-                    String msg = "Vaca/Pago grupal 100% completado (" + detailMessage + ")";
-                    if (effectiveAuth != null || terminal != null) {
+                    String msg = "Pago grupal 100% completado (" + detailMessage + ")";
+                    String authCodeFinal = gp.getCodigoUnico() != null ? gp.getCodigoUnico() : effectiveAuth;
+                    if (authCodeFinal != null || terminal != null) {
                         orderingClient.updateOrderStatus(pedidoPago.getPedidoId(), 2,
                                 msg, null,
-                                effectiveAuth, terminal, pedidoPago.getMonto());
+                                authCodeFinal, terminal, gp.getValorTotal());
                     } else {
                         orderingClient.updateOrderStatus(pedidoPago.getPedidoId(), 2, msg, null);
                     }
@@ -568,8 +659,54 @@ public class PaymentServiceImpl implements PaymentService {
                             pedidoPago.getPedidoId(), nuevoTotalPagado, nuevoSaldo);
                 }
                 grupoPagoRepository.save(gp);
+
+                // Notificar en tiempo real por WebSocket/Redis a los participantes involucrados
+                if (notificationServiceClient != null) {
+                    try {
+                        Long arenaIdLong = parseArenaId(gp.getArenaId());
+                        List<Long> usuarios = new ArrayList<>();
+                        if (pedidoPago.getUsuarioId() != null && pedidoPago.getUsuarioId() > 0)
+                            usuarios.add(pedidoPago.getUsuarioId());
+                        if (gpu.getUsuarioId() != null && !usuarios.contains(gpu.getUsuarioId()))
+                            usuarios.add(gpu.getUsuarioId());
+                        if (gp.getCreacionUsuario() != null && !usuarios.contains(gp.getCreacionUsuario())) {
+                            usuarios.add(gp.getCreacionUsuario());
+                        }
+                        notificationServiceClient.notificarCambioEstadoPagoMultiple(
+                                arenaIdLong, usuarios, pedidoPago.getPedidoId(), gp.getId(), gp.getCodigoUnico(),
+                                23, "Pago Aprobado", pedidoPago.getMonto(), detailMessage);
+                    } catch (Exception ex) {
+                        log.warn("Error enviando notificación de aporte aprobado: {}", ex.getMessage());
+                    }
+                }
             }
         } else {
+            // BU-03 / CRIT-04: Validar que el monto aprobado coincida con el valor del
+            // pedido en Ordering antes de confirmar
+            if (pedidoPago.getPedidoId() != null && pedidoPago.getGrupoPagoUsuario() == null) {
+                try {
+                    com.beathub.multiarenas.delivery.payment.client.dto.PedidoClientResponse pedidoReal = orderingClient
+                            .getPedido(pedidoPago.getPedidoId(), null).orElse(null);
+                    if (pedidoReal != null && pedidoReal.getValorTotal() != null) {
+                        if (pedidoPago.getMonto() == null
+                                || pedidoPago.getMonto().compareTo(pedidoReal.getValorTotal()) < 0) {
+                            log.error(
+                                    "[BU-03] Discrepancia de monto en pago Credibanco: pagado={} vs pedido={}. NO se confirma a Ordering.",
+                                    pedidoPago.getMonto(), pedidoReal.getValorTotal());
+                            pedidoPago.setEstadoId(PedidoPago.ESTADO_RECHAZADO);
+                            pedidoPagoRepository.save(pedidoPago);
+                            return;
+                        }
+                    }
+                } catch (PaymentException pe) {
+                    throw pe;
+                } catch (Exception ex) {
+                    log.error("[BU-03] Error revalidando monto con Ordering en pago Credibanco: {}", ex.getMessage());
+                    throw new PaymentException(
+                            "Error validando la integridad del monto del pedido con el servicio de órdenes");
+                }
+            }
+
             // Notificar a Ordering (estado 2: Pagado / En preparación)
             if (effectiveAuth != null || terminal != null) {
                 orderingClient.updateOrderStatus(pedidoPago.getPedidoId(), 2, detailMessage, null,
@@ -577,6 +714,42 @@ public class PaymentServiceImpl implements PaymentService {
             } else {
                 orderingClient.updateOrderStatus(pedidoPago.getPedidoId(), 2, detailMessage, null);
             }
+
+            // Notificar en tiempo real por WebSocket/Redis al usuario titular
+            if (notificationServiceClient != null && pedidoPago.getUsuarioId() != null
+                    && pedidoPago.getUsuarioId() > 0) {
+                try {
+                    Long arenaIdLong = parseArenaId(pedidoPago.getArenaId());
+                    notificationServiceClient.notificarCambioEstadoPago(
+                            arenaIdLong, pedidoPago.getUsuarioId(), pedidoPago.getPedidoId(), null, null,
+                            23, "Pago Aprobado", pedidoPago.getMonto(), detailMessage);
+                } catch (Exception ex) {
+                    log.warn("Error enviando notificación de pago individual aprobado: {}", ex.getMessage());
+                }
+            }
+        }
+    }
+
+    private void notificarEstadoPagoRechazado(PedidoPago pedidoPago, String motivo) {
+        if (notificationServiceClient == null || pedidoPago == null)
+            return;
+        try {
+            Long arenaIdLong = parseArenaId(pedidoPago.getArenaId());
+            GrupoPago gp = pedidoPago.getGrupoPagoUsuario() != null ? pedidoPago.getGrupoPagoUsuario().getGrupoPago()
+                    : null;
+            Long grupoId = gp != null ? gp.getId() : null;
+            String codigoUnico = gp != null ? gp.getCodigoUnico() : null;
+            List<Long> usuarios = new ArrayList<>();
+            if (pedidoPago.getUsuarioId() != null && pedidoPago.getUsuarioId() > 0)
+                usuarios.add(pedidoPago.getUsuarioId());
+            if (gp != null && gp.getCreacionUsuario() != null && !usuarios.contains(gp.getCreacionUsuario())) {
+                usuarios.add(gp.getCreacionUsuario());
+            }
+            notificationServiceClient.notificarCambioEstadoPagoMultiple(
+                    arenaIdLong, usuarios, pedidoPago.getPedidoId(), grupoId, codigoUnico,
+                    24, "Pago Rechazado", pedidoPago.getMonto(), motivo != null ? motivo : "Transacción rechazada");
+        } catch (Exception ex) {
+            log.warn("Error enviando notificación de pago rechazado: {}", ex.getMessage());
         }
     }
 
@@ -712,6 +885,92 @@ public class PaymentServiceImpl implements PaymentService {
         GrupoPagoUsuario grupoPagoUsuario = request.getGrupoPagoUsuarioId() != null
                 ? grupoPagoUsuarioRepository.findById(request.getGrupoPagoUsuarioId()).orElse(null)
                 : null;
+
+        // BU-03 / CRIT-04: Validación estricta y sincronización del monto contra
+        // Ordering en payWithToken (Fail-Closed)
+        if (request.getPedidoId() != null) {
+            com.beathub.multiarenas.delivery.payment.client.dto.PedidoClientResponse pedido;
+            try {
+                pedido = orderingClient.getPedido(request.getPedidoId(), null)
+                        .orElseThrow(() -> new PaymentException(
+                                "Pedido #" + request.getPedidoId() + " no encontrado en el servicio de órdenes."));
+            } catch (PaymentException pe) {
+                throw pe;
+            } catch (Exception ex) {
+                log.error("[BU-03] Error consultando Ordering para pedido #{}: {}", request.getPedidoId(),
+                        ex.getMessage());
+                throw new PaymentException("El servicio de órdenes no está disponible. No se puede iniciar el pago.");
+            }
+
+            if (pedido.getValorTotal() == null || pedido.getValorTotal().compareTo(BigDecimal.ZERO) <= 0) {
+                throw new PaymentException("El pedido no tiene un monto válido para pago.");
+            }
+
+            if (request.getGrupoPagoUsuarioId() == null) {
+                if (pedido.getUsuarioId() != null && !pedido.getUsuarioId().equals(usuarioId)) {
+                    throw new PaymentException("El pedido no pertenece al usuario autenticado");
+                }
+                BigDecimal valorTotalOficial = calcularValorTotalOficial(pedido, request.getPedidoIds());
+                if (request.getMonto() != null && request.getMonto().compareTo(valorTotalOficial) != 0) {
+                    log.warn(
+                            "[BU-03] Monto manipulado por el cliente en Credibanco payWithToken ({}). Reemplazado por oficial: {}",
+                            request.getMonto(), valorTotalOficial);
+                }
+                request.setMonto(valorTotalOficial);
+            } else {
+                if (grupoPagoUsuario == null) {
+                    throw new PaymentException("La cuota de pago grupal especificada no existe.");
+                }
+                GrupoPago gp = grupoPagoUsuario.getGrupoPago();
+                if (gp != null && gp.getPedidoId() != null
+                        && !request.getPedidoId().equals(gp.getPedidoId())) {
+                    boolean pedidoAsociado = grupoPagoPedidoRepository.existsByGrupoPagoIdAndPedidoId(gp.getId(),
+                            request.getPedidoId());
+                    if (!pedidoAsociado) {
+                        throw new PaymentException("La cuota de pago grupal no corresponde al pedido indicado.");
+                    }
+                }
+                if (grupoPagoUsuario.getUsuarioId() != null
+                        && !grupoPagoUsuario.getUsuarioId().equals(0L)
+                        && !grupoPagoUsuario.getUsuarioId().equals(usuarioId)) {
+                    throw new PaymentException("La cuota de pago grupal no pertenece al usuario autenticado");
+                }
+
+                boolean esLibre = gp != null && "LIBRE_PAGO".equalsIgnoreCase(gp.getModalidadDivision());
+
+                if (esLibre || grupoPagoUsuario.getMontoAsignado() == null) {
+                    // Modalidad LIBRE APORTE: Respetar el monto que el usuario ingresó
+                    if (request.getMonto() == null || request.getMonto().compareTo(BigDecimal.ZERO) <= 0) {
+                        throw new PaymentException("Debe ingresar un monto válido a aportar.");
+                    }
+                    if (gp != null && gp.getSaldoPendiente() != null
+                            && request.getMonto().compareTo(gp.getSaldoPendiente()) > 0) {
+                        throw new PaymentException("El monto a aportar ($" + request.getMonto()
+                                + ") supera el saldo pendiente del grupo ($" + gp.getSaldoPendiente() + ").");
+                    }
+                } else {
+                    // Modalidad POR PARTES IGUALES: Cuota fija preasignada
+                    BigDecimal asignado = grupoPagoUsuario.getMontoAsignado();
+                    BigDecimal pagado = grupoPagoUsuario.getMontoPagado() != null
+                            ? grupoPagoUsuario.getMontoPagado()
+                            : BigDecimal.ZERO;
+                    BigDecimal saldoCuota = asignado.subtract(pagado);
+                    if (saldoCuota.compareTo(BigDecimal.ZERO) <= 0) {
+                        if (gp != null && gp.getSaldoPendiente() != null
+                                && gp.getSaldoPendiente().compareTo(BigDecimal.ZERO) > 0) {
+                            saldoCuota = gp.getSaldoPendiente();
+                        } else {
+                            throw new PaymentException("La cuota de pago grupal ya se encuentra saldada.");
+                        }
+                    }
+                    if (gp != null && gp.getSaldoPendiente() != null
+                            && saldoCuota.compareTo(gp.getSaldoPendiente()) > 0) {
+                        saldoCuota = gp.getSaldoPendiente();
+                    }
+                    request.setMonto(saldoCuota);
+                }
+            }
+        }
 
         // 3. Crear registro inicial en base de datos
         Long effectiveUsuarioId = (usuarioId != null && usuarioId > 0) ? usuarioId : 0L;
@@ -1602,5 +1861,36 @@ public class PaymentServiceImpl implements PaymentService {
             }
         }
         return 1L;
+    }
+
+    private BigDecimal calcularValorTotalOficial(
+            com.beathub.multiarenas.delivery.payment.client.dto.PedidoClientResponse pedido, List<Long> pedidoIds) {
+        BigDecimal total = pedido.getValorTotal() != null ? pedido.getValorTotal() : BigDecimal.ZERO;
+        if (pedido.getSubpedidos() != null && !pedido.getSubpedidos().isEmpty()) {
+            for (com.beathub.multiarenas.delivery.payment.client.dto.PedidoClientResponse sub : pedido
+                    .getSubpedidos()) {
+                if (sub.getValorTotal() != null && sub.getValorTotal().compareTo(BigDecimal.ZERO) > 0) {
+                    total = total.add(sub.getValorTotal());
+                }
+            }
+        } else if (pedidoIds != null && !pedidoIds.isEmpty()) {
+            for (Long otroPedidoId : pedidoIds) {
+                if (otroPedidoId != null && !otroPedidoId.equals(pedido.getId())) {
+                    try {
+                        com.beathub.multiarenas.delivery.payment.client.dto.PedidoClientResponse otro = orderingClient
+                                .getPedido(otroPedidoId, null).orElse(null);
+                        if (otro != null && otro.getValorTotal() != null
+                                && Objects.equals(otro.getUsuarioId(), pedido.getUsuarioId())
+                                && otro.getValorTotal().compareTo(BigDecimal.ZERO) > 0) {
+                            total = total.add(otro.getValorTotal());
+                        }
+                    } catch (Exception ex) {
+                        log.warn("[BU-03] No se pudo consultar el pedido hermano #{} para validar monto total: {}",
+                                otroPedidoId, ex.getMessage());
+                    }
+                }
+            }
+        }
+        return total;
     }
 }

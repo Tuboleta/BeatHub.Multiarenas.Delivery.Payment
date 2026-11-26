@@ -56,6 +56,18 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
 
     private static final int PASARELA_MERCADOPAGO_ID = IntegrationAuditService.SERVICIO_MERCADOPAGO;
 
+    /**
+     * Ventana mínima entre consultas síncronas a la API de Mercado Pago para un
+     * mismo pago.
+     * Protege el Gateway y los límites de tasa (rate limits) de Mercado Pago bajo
+     * tráfico masivo,
+     * permitiendo que el Webhook actualice la BD en tiempo real sin tormentas de
+     * polling.
+     */
+    private static final long EXTERNAL_SYNC_COOLDOWN_MS = 15_000L;
+    private static final int MAX_SYNC_CACHE_ENTRIES = 5_000;
+    private final java.util.concurrent.ConcurrentHashMap<Long, Long> lastExternalSyncByPagoId = new java.util.concurrent.ConcurrentHashMap<>();
+
     @Override
     @Transactional
     public PaymentInitResponse initiateOrder(InitPaymentRequest request, String arenaId, Long usuarioId) {
@@ -932,12 +944,35 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
         String resolvedMedioPago = null;
         String resolvedTerminal = "MERCADOPAGO";
 
-        // Cortocircuito defensivo: si el pago ya está aprobado en base de datos, evitar
+        // Cortocircuito defensivo: si el pago ya está aprobado o reversado en base de
+        // datos, evitar
         // llamadas síncronas a Mercado Pago
         boolean yaAprobado = Integer.valueOf(2).equals(pedidoPago.getEstadoId())
-                || Integer.valueOf(PedidoPago.ESTADO_APROBADO).equals(pedidoPago.getEstadoId());
+                || Integer.valueOf(PedidoPago.ESTADO_APROBADO).equals(pedidoPago.getEstadoId())
+                || Integer.valueOf(PedidoPago.ESTADO_REVERSADO).equals(pedidoPago.getEstadoId());
 
-        if (!yaAprobado) {
+        // Throttle ligero por pedidoPagoId para evitar tormentas de polling hacia
+        // Mercado Pago
+        // en eventos masivos (el Webhook actualiza la BD inmediatamente al recibir
+        // confirmación)
+        boolean enCooldown = false;
+        Long pagoIdKey = pedidoPago.getId();
+        if (!yaAprobado && pagoIdKey != null) {
+            long nowMs = System.currentTimeMillis();
+            Long lastSyncMs = lastExternalSyncByPagoId.get(pagoIdKey);
+            if (lastSyncMs != null && (nowMs - lastSyncMs) < EXTERNAL_SYNC_COOLDOWN_MS) {
+                enCooldown = true;
+                log.debug("[MercadoPagoServiceImpl] Omitiendo consulta externa por cooldown ({}ms) para pagoId={}",
+                        (nowMs - lastSyncMs), pagoIdKey);
+            } else {
+                if (lastExternalSyncByPagoId.size() >= MAX_SYNC_CACHE_ENTRIES) {
+                    lastExternalSyncByPagoId.clear();
+                }
+                lastExternalSyncByPagoId.put(pagoIdKey, nowMs);
+            }
+        }
+
+        if (!yaAprobado && !enCooldown) {
             boolean sincronizado = false;
 
             // 1. Si cuenta con mpOrderId (flujo principal de Mercado Pago Orders / Checkout
@@ -1053,7 +1088,14 @@ public class MercadoPagoServiceImpl implements MercadoPagoService {
         }
 
         if (resolvedMedioPago == null || resolvedMedioPago.isBlank()) {
-            resolvedMedioPago = "Tarjeta de crédito o débito";
+            String descLower = pedidoPago.getActionCodeDescription() != null
+                    ? pedidoPago.getActionCodeDescription().toLowerCase()
+                    : "";
+            if (descLower.contains("transfer") || descLower.contains("pse")) {
+                resolvedMedioPago = "PSE / Transferencia bancaria";
+            } else {
+                resolvedMedioPago = "Tarjeta de crédito o débito";
+            }
         }
 
         String resolvedAuth = pedidoPago.getAuthCode();

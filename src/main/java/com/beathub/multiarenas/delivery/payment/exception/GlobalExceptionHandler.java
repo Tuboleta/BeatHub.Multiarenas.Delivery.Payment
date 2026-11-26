@@ -159,17 +159,74 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(error);
     }
 
+    @ExceptionHandler(org.springframework.web.servlet.resource.NoResourceFoundException.class)
+    public ResponseEntity<ErrorResponse> handleNoResourceFound(
+            org.springframework.web.servlet.resource.NoResourceFoundException ex, HttpServletRequest req) {
+        ErrorResponse error = ErrorResponse.builder()
+                .success(false)
+                .status(HttpStatus.NOT_FOUND.value())
+                .error("Recurso no encontrado")
+                .message("El recurso solicitado no existe")
+                .path(req.getRequestURI())
+                .timestamp(LocalDateTime.now())
+                .build();
+        return ResponseEntity.status(HttpStatus.NOT_FOUND).body(error);
+    }
+
     @ExceptionHandler(org.springframework.web.HttpRequestMethodNotSupportedException.class)
     public ResponseEntity<ErrorResponse> handleMethodNotSupported(org.springframework.web.HttpRequestMethodNotSupportedException ex, HttpServletRequest req) {
         ErrorResponse error = ErrorResponse.builder()
                 .success(false)
                 .status(HttpStatus.METHOD_NOT_ALLOWED.value())
                 .error("Método HTTP no permitido")
-                .message(ex.getMessage())
+                .message("El método HTTP utilizado no está permitido para esta ruta")
                 .path(req.getRequestURI())
                 .timestamp(LocalDateTime.now())
                 .build();
         return ResponseEntity.status(HttpStatus.METHOD_NOT_ALLOWED).body(error);
+    }
+
+    @ExceptionHandler(org.springframework.http.converter.HttpMessageNotReadableException.class)
+    public ResponseEntity<ErrorResponse> handleMessageNotReadable(
+            org.springframework.http.converter.HttpMessageNotReadableException ex, HttpServletRequest req) {
+        log.warn("Cuerpo JSON inválido en Payment {}: {}", req.getRequestURI(), ex.getMessage());
+        ErrorResponse error = ErrorResponse.builder()
+                .success(false)
+                .status(HttpStatus.BAD_REQUEST.value())
+                .error("Petición inválida")
+                .message("El cuerpo de la solicitud contiene un formato o tipo de dato inválido")
+                .path(req.getRequestURI())
+                .timestamp(LocalDateTime.now())
+                .build();
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(error);
+    }
+
+    @ExceptionHandler(org.springframework.web.bind.MissingServletRequestParameterException.class)
+    public ResponseEntity<ErrorResponse> handleMissingParam(
+            org.springframework.web.bind.MissingServletRequestParameterException ex, HttpServletRequest req) {
+        ErrorResponse error = ErrorResponse.builder()
+                .success(false)
+                .status(HttpStatus.BAD_REQUEST.value())
+                .error("Parámetro requerido faltante")
+                .message(String.format("El parámetro requerido '%s' no fue enviado", ex.getParameterName()))
+                .path(req.getRequestURI())
+                .timestamp(LocalDateTime.now())
+                .build();
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(error);
+    }
+
+    @ExceptionHandler(org.springframework.web.method.annotation.MethodArgumentTypeMismatchException.class)
+    public ResponseEntity<ErrorResponse> handleTypeMismatch(
+            org.springframework.web.method.annotation.MethodArgumentTypeMismatchException ex, HttpServletRequest req) {
+        ErrorResponse error = ErrorResponse.builder()
+                .success(false)
+                .status(HttpStatus.BAD_REQUEST.value())
+                .error("Parámetro inválido")
+                .message(String.format("El parámetro '%s' tiene un valor inválido", ex.getName()))
+                .path(req.getRequestURI())
+                .timestamp(LocalDateTime.now())
+                .build();
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(error);
     }
 
     @ExceptionHandler(Exception.class)
@@ -181,7 +238,7 @@ public class GlobalExceptionHandler {
                 .success(false)
                 .status(HttpStatus.INTERNAL_SERVER_ERROR.value())
                 .error("Error interno del servidor")
-                .message(ex.getMessage() != null ? ex.getMessage() : "Error interno procesando el pago")
+                .message("Ocurrió un error interno procesando el pago")
                 .path(req.getRequestURI())
                 .timestamp(LocalDateTime.now())
                 .build();

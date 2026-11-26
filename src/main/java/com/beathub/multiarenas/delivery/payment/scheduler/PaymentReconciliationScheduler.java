@@ -1,5 +1,6 @@
 package com.beathub.multiarenas.delivery.payment.scheduler;
 
+import com.beathub.multiarenas.delivery.payment.audit.AuditContextHolder;
 import com.beathub.multiarenas.delivery.payment.entity.PedidoPago;
 import com.beathub.multiarenas.delivery.payment.repository.PedidoPagoRepository;
 import com.beathub.multiarenas.delivery.payment.service.IntegrationAuditService;
@@ -13,6 +14,7 @@ import org.springframework.stereotype.Component;
 
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.UUID;
 
 /**
  * Sonda automática de reconciliación de pagos en segundo plano.
@@ -55,9 +57,12 @@ public class PaymentReconciliationScheduler {
                     log.info("Sonda de Pagos: Reconciliando estado MP de transacción #{} (referencia: {}, mpOrderId: {})",
                             pago.getId(), pago.getReferenciaPago(), pago.getMpOrderId());
 
+                    AuditContextHolder.setCorrelationId("sched-pago-" + pago.getId() + "-" + UUID.randomUUID().toString().substring(0, 8));
                     paymentService.queryPaymentStatus(pago.getId(), pago.getArenaId(), pago.getUsuarioId());
                 } catch (Exception ex) {
                     log.warn("Sonda de Pagos: Error al reconciliar pago MP #{}: {}", pago.getId(), ex.getMessage());
+                } finally {
+                    AuditContextHolder.clear();
                 }
             }
         }
@@ -77,9 +82,12 @@ public class PaymentReconciliationScheduler {
                     log.info("Sonda de Pagos: Reconciliando estado Credibanco de transacción #{} (referencia: {}, credibancoOrderId: {})",
                             pago.getId(), pago.getReferenciaPago(), pago.getCredibancoOrderId());
 
+                    AuditContextHolder.setCorrelationId("sched-pago-" + pago.getId() + "-" + UUID.randomUUID().toString().substring(0, 8));
                     paymentService.queryPaymentStatus(pago.getId(), pago.getArenaId(), pago.getUsuarioId());
                 } catch (Exception ex) {
                     log.warn("Sonda de Pagos: Error al reconciliar pago Credibanco #{}: {}", pago.getId(), ex.getMessage());
+                } finally {
+                    AuditContextHolder.clear();
                 }
             }
         }

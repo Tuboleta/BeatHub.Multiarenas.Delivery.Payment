@@ -1,3 +1,7 @@
+C:\Users\Dev23\Documents\workspaces\ingenios\MultiArenas\BeatHub.Multiarenas.Delivery.Payment\src\main\java\com\beathub\multiarenas\delivery\payment\audit\AuditContextHolder.java
+C:\Users\Dev23\Documents\workspaces\ingenios\MultiArenas\BeatHub.Multiarenas.Delivery.Payment\src\main\java\com\beathub\multiarenas\delivery\payment\audit\AuditCorrelationFilter.java
+C:\Users\Dev23\Documents\workspaces\ingenios\MultiArenas\BeatHub.Multiarenas.Delivery.Payment\src\main\java\com\beathub\multiarenas\delivery\payment\audit\HibernateAuditEventListener.java
+C:\Users\Dev23\Documents\workspaces\ingenios\MultiArenas\BeatHub.Multiarenas.Delivery.Payment\src\main\java\com\beathub\multiarenas\delivery\payment\audit\HibernateAuditListenerRegistrar.java
 C:\Users\Dev23\Documents\workspaces\ingenios\MultiArenas\BeatHub.Multiarenas.Delivery.Payment\src\main\java\com\beathub\multiarenas\delivery\payment\client\AuthServiceClient.java
 C:\Users\Dev23\Documents\workspaces\ingenios\MultiArenas\BeatHub.Multiarenas.Delivery.Payment\src\main\java\com\beathub\multiarenas\delivery\payment\client\CredibancoRestClient.java
 C:\Users\Dev23\Documents\workspaces\ingenios\MultiArenas\BeatHub.Multiarenas.Delivery.Payment\src\main\java\com\beathub\multiarenas\delivery\payment\client\dto\CredibancoBindingItem.java
